@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IONIQ6 Dashcam</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d0d0d; color: #fff; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+    h1 { font-size: 1.2rem; margin-bottom: 12px; color: #4fc3f7; }
+    #video { border: 1px solid #333; border-radius: 8px; width: 100%; max-width: 960px; background: #000; }
+    #controls { margin-top: 12px; display: flex; gap: 10px; }
+    button { background: #4fc3f7; color: #000; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+    button:hover { background: #81d4fa; }
+    button.snapshot { background: #ff8a65; }
+    button.snapshot:hover { background: #ffab91; }
+    #status { margin-top: 10px; font-size: 0.85rem; color: #888; }
+    #canvas { display: none; }
+  </style>
+</head>
+<body>
+  <h1>🚗 IONIQ6 Dashcam — VIOFO A139 PRO</h1>
+  <video id="video" autoplay playsinline controls></video>
+  <div id="controls">
+    <button onclick="initStream()">▶ Connect</button>
+    <button onclick="takeSnapshot()">📸 Snapshot</button>
+  </div>
+  <div id="status">Click Connect to start streaming</div>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const status = document.getElementById('status');
+    let hls = null;
+
+    function initStream() {
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+
+      status.textContent = 'Starting stream...';
+
+      const m3u8Url = `http://${location.host}/stream.m3u8`;
+
+      if (Hls.isSupported()) {
+        hls = new Hls({
+          startLevel: -1,       // auto quality
+          debug: false,
+        });
+        hls.loadSource(m3u8Url);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().catch(() => {});
+          status.textContent = 'Live streaming';
+        });
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) {
+            status.textContent = 'Stream error: ' + data.type;
+          }
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari / native HLS
+        video.src = m3u8Url;
+        video.play().catch(() => {});
+        status.textContent = 'Live streaming (native HLS)';
+      } else {
+        status.textContent = 'HLS not supported in this browser';
+      }
+    }
+
+    function takeSnapshot() {
+      if (!video.src) { alert('Not connected!'); return; }
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      canvas.toBlob(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'snapshot-' + Date.now() + '.jpg';
+        a.click();
+      });
+    }
+  </script>
+</body>
+</html>
