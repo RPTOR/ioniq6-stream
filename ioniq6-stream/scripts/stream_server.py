@@ -1,6 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
 RTSP to HLS streaming server with automatic reconnection.
+Serves closest available segment when a requested one is missing (ffmpeg restart survivability).
 """
 import subprocess, os, signal, sys, re, time, threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -12,7 +13,6 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 
 os.makedirs(STREAM_DIR, exist_ok=True)
 
-# Clean ONCE at script startup only — NOT on ffmpeg restart
 _cleaned = False
 def clean_stream_dir():
     global _cleaned
@@ -29,13 +29,12 @@ def clean_stream_dir():
                 os.unlink(p)
         except: pass
 
-clean_stream_dir()   # clean only on first startup
+clean_stream_dir()
 DEVNULL = open(os.devnull, 'wb')
 proc = None
 
 def start_ffmpeg():
     global proc
-    # DO NOT clean here — old segments may still be downloading by hls.js
     ffmpeg_cmd = [
         "ffmpeg",
         "-rtsp_transport", "tcp",
@@ -116,7 +115,32 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(open(ts_path, 'rb').read())
             else:
-                self.send_error(404, "not found")
+                # Segment missing (ffmpeg restarted) — serve the oldest available
+                # Extract stream number from request e.g. "stream5.ts" -> 5
+                m = re.search(r'stream(\d+)\.ts', ts)
+                if m:
+                    req_num = int(m.group(1))
+                    # Find all existing stream files
+                    all_files = []
+                    for f in os.listdir(STREAM_DIR):
+                        fm = re.match(r'stream(\d+)\.ts', f)
+                        if fm:
+                            all_files.append((int(fm.group(1)), f))
+                    if all_files:
+                        all_files.sort(key=lambda x: x[0])
+                        # Find the CLOSEST segment to what was requested
+                        # If request is older than oldest available, give oldest
+                        closest = min(all_files, key=lambda x: abs(x[0] - req_num))
+                        alt_path = os.path.join(STREAM_DIR, closest[1])
+                        self.send_response(200)
+                        self.send_header("Content-Type", "video/mp2t")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Cache-Control", "no-cache, max-age=0")
+                        self.send_header("X-Missing-Segment", ts)  # debugging header
+                        self.end_headers()
+                        self.wfile.write(open(alt_path, 'rb').read())
+                        return
+                self.send_error(404, f"not found: {ts}")
             return
 
         if self.path in ("/", "/index.html"):
