@@ -17,20 +17,20 @@
     button.snapshot:hover { background: #ffab91; }
     button.browse { background: #66bb6a; }
     button.browse:hover { background: #81c784; }
+    button.active { background: #388e3c; color: #fff; }
     #status { margin-top: 10px; font-size: 0.85rem; color: #888; }
     #canvas { display: none; }
     #browser { margin-top: 20px; width: 100%; max-width: 960px; display: none; }
     #browser.visible { display: block; }
-    #browser-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-    #browser-path { color: #aaa; font-size: 0.85rem; }
+    #browser-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    #browser-path { color: #aaa; font-size: 0.85rem; font-family: monospace; }
     #file-list { background: #111; border-radius: 8px; padding: 10px; max-height: 300px; overflow-y: auto; }
-    .file-row { display: flex; justify-content: space-between; padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+    .file-row { display: flex; justify-content: space-between; padding: 6px 8px; border-radius: 4px; cursor: pointer; align-items: center; }
     .file-row:hover { background: #222; }
     .file-row.folder { color: #4fc3f7; }
-    .file-row .fname { flex: 1; }
+    .file-row .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-row .fsize { color: #888; font-size: 0.8rem; margin-left: 12px; white-space: nowrap; }
     .file-row .ftime { color: #666; font-size: 0.75rem; margin-left: 12px; white-space: nowrap; }
-    #browser iframe { display: none; width: 100%; height: 400px; border: 1px solid #333; border-radius: 8px; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -39,7 +39,7 @@
   <div id="controls">
     <button onclick="initStream()">▶ Connect</button>
     <button onclick="takeSnapshot()">📸 Snapshot</button>
-    <button class="browse" onclick="toggleBrowser()">📁 File Browser</button>
+    <button class="browse" id="browseBtn" onclick="toggleBrowser()">📁 File Browser</button>
   </div>
   <div id="status">Click Connect to start streaming</div>
   <canvas id="canvas"></canvas>
@@ -47,17 +47,18 @@
   <div id="browser">
     <div id="browser-header">
       <button onclick="navigateUp()">⬆ Up</button>
+      <button onclick="loadFolder('/DCIM')">🏠 Home</button>
       <span id="browser-path">/DCIM</span>
-      <button onclick="loadFolder(currentPath)">🔄 Refresh</button>
     </div>
-    <div id="file-list">Loading...</div>
+    <div id="file-list">Click "File Browser" to browse camera files</div>
   </div>
 
   <script>
     const video   = document.getElementById('video');
     const canvas  = document.getElementById('canvas');
     const status  = document.getElementById('status');
-    const CAM_URL = 'http://192.168.167.40';
+    const browseBtn = document.getElementById('browseBtn');
+    const CAM_PROXY = '/cam';  // proxied through stream_server.py
     let hls = null;
     let browserOpen = false;
     let currentPath = '/DCIM';
@@ -88,7 +89,9 @@
       browserOpen = !browserOpen;
       const el = document.getElementById('browser');
       el.classList.toggle('visible', browserOpen);
+      browseBtn.classList.toggle('active', browserOpen);
       if (browserOpen && !currentPath) loadFolder('/DCIM');
+      else if (browserOpen) loadFolder(currentPath);
     }
 
     async function loadFolder(path) {
@@ -98,7 +101,7 @@
       pathEl.textContent = path || '/';
       list.innerHTML = 'Loading...';
       try {
-        const r = await fetch(CAM_URL + path);
+        const r = await fetch(CAM_PROXY + path);
         const html = await r.text();
         const rows = parseFileList(html, path);
         if (rows.length === 0) {
@@ -106,8 +109,8 @@
           return;
         }
         list.innerHTML = rows.map(row =>
-          `<div class="file-row ${row.type}" onclick="${row.type === 'folder' ? `loadFolder('${row.href}')` : `playFile('${row.href}','${row.name}')`}">
-            <span class="fname">${row.name}</span>
+          `<div class="file-row ${row.type}" ${row.type === 'folder' ? `onclick="loadFolder('${row.href}')"` : `onclick="playFile('${row.href}','${row.name}')"`}>
+            <span class="fname">${row.type === 'folder' ? '📁 ' : '🎬 '}${row.name}</span>
             <span class="fsize">${row.size}</span>
             <span class="ftime">${row.time}</span>
            </div>`
@@ -119,16 +122,23 @@
 
     function parseFileList(html, basePath) {
       const rows = [];
-      // Parse table rows: <tr><td><a href="...">name</a>...size...time
-      const re = /<tr><td><a href="([^"]+)"><b>([^<]+)<\/b><\/a>.*?<td[^>]*>([\d,]+)\s*<\/td>.*?<td[^>]*>([\d\/:\s]+)<\/td>/g;
+      // Camera uses: <tr><td><a href="/DCIM/Photo"><b>Photo</b></a><td align=center><i>folder</i><td align=right>2026/02/25 19:07:22
+      const re = /<tr><td><a href="([^"]+)"><b>([^<]+)<\/b><\/a>.*?<td[^>]*>([\d,]+|folder)<\/td>.*?<td[^>]*>([\d\/:\s]+)<\/td>/g;
       let m;
       while ((m = re.exec(html)) !== null) {
         const href = m[1];
         const name = m[2];
         const size = m[3].trim();
         const time = m[4].trim();
-        const fullHref = href.startsWith('/') ? href : basePath.replace(/[^/]*$/,'') + href;
-        const isFolder = size === 'folder' || name === 'folder' || href.endsWith('/') || !size;
+        const isFolder = size === 'folder' || !size;
+        // Resolve relative hrefs
+        let fullHref;
+        if (href.startsWith('/')) {
+          fullHref = href;
+        } else {
+          const base = basePath.replace(/[^/]*$/, '');
+          fullHref = base + href;
+        }
         rows.push({ type: isFolder ? 'folder' : 'file', name, href: fullHref, size, time });
       }
       return rows;
@@ -142,12 +152,12 @@
     }
 
     function playFile(href, name) {
-      // Open camera file directly in video tag
-      const url = CAM_URL + href;
+      // Proxy through server so browser can play camera files
+      const url = CAM_PROXY + href;
       if (hls) { hls.destroy(); hls = null; }
       video.src = url;
       video.play().catch(()=>{});
-      status.textContent = 'Playing: ' + name;
+      status.textContent = '▶ Playing: ' + name;
     }
   </script>
 </body>

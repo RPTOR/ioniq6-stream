@@ -1,23 +1,28 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
 RTSP to HLS streaming server with automatic reconnection.
-Serves closest available segment when a requested one is missing (ffmpeg restart survivability).
+Camera file browser proxy — fetches from camera so browser can browse without CORS.
 """
 import subprocess, os, signal, sys, re, time, threading
+try:
+    from http.client import HTTPConnection
+except ImportError:
+    from httplib import HTTPConnection
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-STREAM_DIR = "/data/data/com.termux/files/home/.stream"
-HLS_URL    = "rtsp://192.168.167.40:554/live"
-PORT       = 8080
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+STREAM_DIR  = "/data/data/com.termux/files/home/.stream"
+HLS_URL     = "rtsp://192.168.167.40:554/live"
+CAM_HOST    = "192.168.167.40"
+CAM_PORT    = 80
+PORT        = 8080
+ASSETS_DIR  = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 
 os.makedirs(STREAM_DIR, exist_ok=True)
 
 _cleaned = False
 def clean_stream_dir():
     global _cleaned
-    if _cleaned:
-        return
+    if _cleaned: return
     _cleaned = True
     for item in os.listdir(STREAM_DIR):
         p = os.path.join(STREAM_DIR, item)
@@ -25,8 +30,7 @@ def clean_stream_dir():
             if os.path.isdir(p):
                 for f in os.listdir(p): os.unlink(os.path.join(p, f))
                 os.rmdir(p)
-            else:
-                os.unlink(p)
+            else: os.unlink(p)
         except: pass
 
 clean_stream_dir()
@@ -36,18 +40,10 @@ proc = None
 def start_ffmpeg():
     global proc
     ffmpeg_cmd = [
-        "ffmpeg",
-        "-rtsp_transport", "tcp",
-        "-re",
-        "-i",              HLS_URL,
-        "-c:v",            "copy",
-        "-f",              "hls",
-        "-hls_time",       "2",
-        "-hls_list_size",  "30",
-        "-hls_flags",      "append_list",
-        "-reconnect",      "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_delay_max", "5",
+        "ffmpeg", "-rtsp_transport", "tcp", "-re", "-i", HLS_URL,
+        "-c:v", "copy", "-f", "hls",
+        "-hls_time", "2", "-hls_list_size", "30", "-hls_flags", "append_list",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         os.path.join(STREAM_DIR, "stream.m3u8"),
     ]
     proc = subprocess.Popen(ffmpeg_cmd, stdout=DEVNULL.fileno(), stderr=DEVNULL.fileno())
@@ -60,10 +56,8 @@ def watchdog():
         time.sleep(5)
         if proc is None:
             start_ffmpeg()
-            continue
-        rc = proc.poll()
-        if rc is not None:
-            print(f"[{time.strftime('%H:%M:%S')}] ffmpeg died (rc={rc}), restarting...")
+        elif proc.poll() is not None:
+            print(f"[{time.strftime('%H:%M:%S')}] ffmpeg died, restarting...")
             start_ffmpeg()
 
 threading.Thread(target=watchdog, daemon=True).start()
@@ -76,7 +70,36 @@ signal.signal(signal.SIGINT,  lambda s,f: (DEVNULL.close(), sys.exit(0)))
 
 
 class HLSHandler(SimpleHTTPRequestHandler):
+
+    def _proxy_camera(self, path):
+        """Fetch a path from the camera HTTP server and relay to browser."""
+        try:
+            conn = HTTPConnection(CAM_HOST, CAM_PORT, timeout=10)
+            conn.request("GET", path, headers={"Host": CAM_HOST, "User-Agent": "IONIQ6-Proxy/1.0"})
+            resp = conn.getresponse()
+            body = resp.read()
+            self.send_response(resp.status)
+            for h, v in resp.getheaders():
+                if h.lower() not in ("transfer-encoding", "connection", "keep-alive"):
+                    self.send_header(h, v)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+            conn.close()
+        except Exception as e:
+            self.send_error(500, f"Camera unreachable: {e}")
+
     def do_GET(self):
+        # ── Camera file browser proxy ─────────────────────────────────
+        if self.path.startswith("/cam/"):
+            # /cam/DCIM/Movie/Parking → fetch from camera
+            cam_path = self.path[4:]   # strip /cam
+            if not cam_path.startswith("/"):
+                cam_path = "/" + cam_path
+            self._proxy_camera(cam_path)
+            return
+
+        # ── Stream playlist ────────────────────────────────────────────
         candidates = [
             (os.path.join(STREAM_DIR, "stream.m3u8"), ""),
             (os.path.join(STREAM_DIR, "ch1", "stream.m3u8"), "ch1/"),
@@ -104,6 +127,7 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 self.send_error(503, "Stream not ready")
             return
 
+        # ── Segment files ─────────────────────────────────────────────
         if ".ts" in self.path and not self.path.startswith("/."):
             ts = self.path.split("?")[0].lstrip("/")
             ts_path = os.path.join(STREAM_DIR, ts)
@@ -115,34 +139,27 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(open(ts_path, 'rb').read())
             else:
-                # Segment missing (ffmpeg restarted) — serve the oldest available
-                # Extract stream number from request e.g. "stream5.ts" -> 5
+                # Fallback: serve closest available segment
                 m = re.search(r'stream(\d+)\.ts', ts)
                 if m:
-                    req_num = int(m.group(1))
-                    # Find all existing stream files
-                    all_files = []
-                    for f in os.listdir(STREAM_DIR):
-                        fm = re.match(r'stream(\d+)\.ts', f)
-                        if fm:
-                            all_files.append((int(fm.group(1)), f))
+                    all_files = [(int(re.match(r'stream(\d+)\.ts', f).group(1)), f)
+                                 for f in os.listdir(STREAM_DIR)
+                                 if re.match(r'stream\d+\.ts', f)]
                     if all_files:
-                        all_files.sort(key=lambda x: x[0])
-                        # Find the CLOSEST segment to what was requested
-                        # If request is older than oldest available, give oldest
+                        all_files.sort()
+                        req_num = int(m.group(1))
                         closest = min(all_files, key=lambda x: abs(x[0] - req_num))
-                        alt_path = os.path.join(STREAM_DIR, closest[1])
                         self.send_response(200)
                         self.send_header("Content-Type", "video/mp2t")
                         self.send_header("Access-Control-Allow-Origin", "*")
                         self.send_header("Cache-Control", "no-cache, max-age=0")
-                        self.send_header("X-Missing-Segment", ts)  # debugging header
                         self.end_headers()
-                        self.wfile.write(open(alt_path, 'rb').read())
+                        self.wfile.write(open(os.path.join(STREAM_DIR, closest[1]), 'rb').read())
                         return
-                self.send_error(404, f"not found: {ts}")
+                self.send_error(404, "not found")
             return
 
+        # ── Static files ──────────────────────────────────────────────
         if self.path in ("/", "/index.html"):
             ipath = os.path.join(ASSETS_DIR, "index.html")
             if os.path.exists(ipath):
