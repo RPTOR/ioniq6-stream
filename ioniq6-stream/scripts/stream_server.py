@@ -1,6 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/python3
-"""RTSP to HLS streaming server."""
-import subprocess, os, signal, sys, re
+"""
+RTSP to HLS streaming server with automatic reconnection.
+ffmpeg watchdog — restarts it when it dies.
+"""
+import subprocess, os, signal, sys, re, time, threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 STREAM_DIR = "/data/data/com.termux/files/home/.stream"
@@ -9,60 +12,91 @@ PORT       = 8080
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 
 os.makedirs(STREAM_DIR, exist_ok=True)
-for f in os.listdir(STREAM_DIR):
-    try: os.unlink(os.path.join(STREAM_DIR, f))
-    except: pass
 
-ffmpeg_cmd = [
-    "ffmpeg",
-    "-rtsp_transport", "tcp",
-    "-re",
-    "-i",              HLS_URL,
-    "-c:v",            "copy",
-    "-f",              "hls",
-    "-hls_time",       "2",
-    "-hls_list_size",  "30",   # keep 60s buffer — survives reconnections
-    "-hls_flags",      "append_list",  # no deletion, keep all segments for replay
-    "-reconnect",      "1",
-    "-reconnect_streamed", "1",
-    "-reconnect_delay_max", "5",
-    os.path.join(STREAM_DIR, "stream.m3u8"),
-]
+# Clean stream directory
+def clean_stream_dir():
+    for item in os.listdir(STREAM_DIR):
+        p = os.path.join(STREAM_DIR, item)
+        try:
+            if os.path.isdir(p):
+                for f in os.listdir(p):
+                    os.unlink(os.path.join(p, f))
+                os.rmdir(p)
+            else:
+                os.unlink(p)
+        except: pass
+
+clean_stream_dir()
 
 DEVNULL = open(os.devnull, 'wb')
-proc = subprocess.Popen(ffmpeg_cmd, stdout=DEVNULL.fileno(), stderr=DEVNULL.fileno())
+proc = None
+
+def start_ffmpeg():
+    global proc
+    clean_stream_dir()
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-rtsp_transport", "tcp",
+        "-re",
+        "-i",              HLS_URL,
+        "-c:v",            "copy",
+        "-f",              "hls",
+        "-hls_time",       "2",
+        "-hls_list_size",  "30",
+        "-hls_flags",      "append_list",
+        "-reconnect",      "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_delay_max", "5",
+        os.path.join(STREAM_DIR, "stream.m3u8"),
+    ]
+    proc = subprocess.Popen(ffmpeg_cmd, stdout=DEVNULL.fileno(), stderr=DEVNULL.fileno())
+    print(f"[{time.strftime('%H:%M:%S')}] ffmpeg started (pid={proc.pid})")
+
+# Start ffmpeg
+start_ffmpeg()
+
+def watchdog():
+    """Restart ffmpeg if it dies."""
+    while True:
+        time.sleep(5)
+        if proc is None:
+            start_ffmpeg()
+            continue
+        rc = proc.poll()
+        if rc is not None:
+            print(f"[{time.strftime('%H:%M:%S')}] ffmpeg died (rc={rc}), restarting...")
+            start_ffmpeg()
+
+# Watchdog runs in background
+threading.Thread(target=watchdog, daemon=True).start()
 
 print(f"Stream : {HLS_URL}")
 print(f"Output : {STREAM_DIR}")
 print(f"HTTP   : http://0.0.0.0:{PORT}/")
 
-signal.signal(signal.SIGTERM, lambda s,f: (proc.terminate(), DEVNULL.close(), sys.exit(0)))
-signal.signal(signal.SIGINT,  lambda s,f: (proc.terminate(), DEVNULL.close(), sys.exit(0)))
+signal.signal(signal.SIGTERM, lambda s,f: (DEVNULL.close(), sys.exit(0)))
+signal.signal(signal.SIGINT,  lambda s,f: (DEVNULL.close(), sys.exit(0)))
 
 
 class HLSHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        # Locate the actual m3u8 (root or ch1/ subdirectory)
+        # Find m3u8 — could be root or ch1/ subdirectory
         candidates = [
             (os.path.join(STREAM_DIR, "stream.m3u8"), ""),
             (os.path.join(STREAM_DIR, "ch1", "stream.m3u8"), "ch1/"),
         ]
-        m3u8_path, ch1_subdir = None, ""
+        m3u8_path, ch1 = None, ""
         for p, sub in candidates:
-            if os.path.exists(p):
-                m3u8_path, ch1_subdir = p, sub
-                break
+            if os.path.exists(p): m3u8_path, ch1 = p, sub; break
 
-        if self.path == "/stream.m3u8" or self.path.startswith("/stream.m3u8?"):
+        if self.path.startswith("/stream.m3u8"):
             if m3u8_path and os.path.exists(m3u8_path):
                 c = open(m3u8_path).read()
-                # Rewrite streamNN.ts paths to include ch1/ prefix
-                if ch1_subdir:
-                    def fix(m): return ch1_subdir + m.group(1) + ".ts"
+                if ch1:
+                    def fix(m): return ch1 + m.group(1) + ".ts"
                     c = re.sub(r'(stream\d+\.ts)', fix, c)
-                # Strip ENDLIST — prevents HLS.js from stopping playback on reconnect
-                c = c.replace("#EXT-X-ENDLIST\n", "")
-                c = c.replace("#EXT-X-ENDLIST", "")
+                # Strip ENDLIST so HLS keeps playing through reconnects
+                c = c.replace("#EXT-X-ENDLIST\n", "").replace("#EXT-X-ENDLIST", "")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/vnd.apple.mpegurl")
                 self.send_header("Access-Control-Allow-Origin", "*")
@@ -73,12 +107,9 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 self.send_error(503, "Stream not ready")
             return
 
-        # Serve .ts segment files
-        # Use cache-busting query param so browser always fetches fresh content
-        if (".ts" in self.path or "/ch1/" in self.path) and not self.path.startswith("/."):
-            # Strip any cache-bust query param before mapping to file path
-            ts_path = self.path.split("?")[0].lstrip("/")
-            ts_path = os.path.join(STREAM_DIR, ts_path)
+        if ".ts" in self.path and not self.path.startswith("/."):
+            ts = self.path.split("?")[0].lstrip("/")
+            ts_path = os.path.join(STREAM_DIR, ts)
             if os.path.exists(ts_path):
                 self.send_response(200)
                 self.send_header("Content-Type", "video/mp2t")
@@ -87,10 +118,9 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(open(ts_path, 'rb').read())
             else:
-                self.send_error(404, f"not found: {self.path}")
+                self.send_error(404, "not found")
             return
 
-        # Serve index.html
         if self.path in ("/", "/index.html"):
             ipath = os.path.join(ASSETS_DIR, "index.html")
             if os.path.exists(ipath):
@@ -109,5 +139,4 @@ class HLSHandler(SimpleHTTPRequestHandler):
 
 server = HTTPServer(("0.0.0.0", PORT), HLSHandler)
 server.allow_reuse_address = True
-print("Serving on http://0.0.0.0:{}/".format(PORT))
 server.serve_forever()
