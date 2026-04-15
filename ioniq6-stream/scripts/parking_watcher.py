@@ -2,6 +2,7 @@
 """
 Parking folder watcher for VIOFO A139 PRO dashcam.
 Polls the HTTP parking folder for new files and sends Discord notifications.
+Stores last reported file name + timestamp locally before sending.
 
 Usage:
     python3 parking_watcher.py [--url http://192.168.167.40/DCIM/Movie/Parking] [--interval 60]
@@ -11,18 +12,14 @@ import os
 import sys
 import time
 import re
+import json
 import argparse
 import requests
 from datetime import datetime
-from pathlib import Path
-
-# ─── Discord webhook ─────────────────────────────────────────────────────────
-# Set DISCORD_WEBHOOK_URL in environment or pass --webhook
-# To get a webhook: Discord channel settings → Integrations → Webhooks
 
 DEFAULT_URL = "http://192.168.167.40/DCIM/Movie/Parking"
 DEFAULT_INTERVAL = 60  # seconds
-SEEN_FILE = "/data/data/com.termux/files/home/.parking_seen.txt"
+STATE_FILE = "/data/data/com.termux/files/home/.parking_state.json"
 
 
 def get_file_list(parking_url: str) -> list[dict]:
@@ -35,8 +32,10 @@ def get_file_list(parking_url: str) -> list[dict]:
         return []
 
     files = []
-    # Parse HTML table rows: <tr><td><a href="/DCIM/...">filename</a>...
-    rows = re.findall(r'<tr><td><a href="([^"]+)">([^<]+)</a>.*?<td[^>]*>([\d,]+)</td>.*?<td[^>]*>([\d/:\s]+)</td>', r.text, re.DOTALL)
+    rows = re.findall(
+        r'<tr><td><a href="([^"]+)">([^<]+)</a>.*?<td[^>]*>([\d,]+)</td>.*?<td[^>]*>([\d/:\s]+)</td>',
+        r.text, re.DOTALL
+    )
     for href, name, size, ftime in rows:
         if name in ('.', '..'):
             continue
@@ -46,29 +45,50 @@ def get_file_list(parking_url: str) -> list[dict]:
             'size': size.strip(),
             'ftime': ftime.strip(),
         })
+    # Newest first
+    files.sort(key=lambda f: f['ftime'], reverse=True)
     return files
 
 
-def load_seen() -> set:
-    if not os.path.exists(SEEN_FILE):
-        return set()
-    with open(SEEN_FILE) as f:
-        return set(line.strip() for line in f if line.strip())
+def load_state() -> dict:
+    if not os.path.exists(STATE_FILE):
+        return {"seen": [], "last": None}
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"seen": [], "last": None}
 
 
-def save_seen(names: set):
-    with open(SEEN_FILE, 'w') as f:
-        for n in sorted(names):
-            f.write(n + '\n')
+def save_state(state: dict):
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f, indent=2)
+
+
+def save_last_report(file_info: dict):
+    """
+    Persist the last reported file name + dashcam timestamp
+    to local state BEFORE sending Discord.
+    This survives even if Discord fails.
+    """
+    state = load_state()
+    state["last"] = {
+        "name":     file_info['name'],
+        "ftime":    file_info['ftime'],
+        "size":     file_info['size'],
+        "href":     file_info['href'],
+        "reported_at": datetime.now().isoformat(),
+    }
+    save_state(state)
+    print(f"  ✓ Last report saved: {file_info['name']} ({file_info['ftime']})")
 
 
 def send_discord(webhook_url: str, files: list[dict], parking_url: str):
     """Send a Discord embed notification for new files."""
     if not webhook_url:
-        print("No Discord webhook URL set — skipping notification")
+        print("  No Discord webhook URL set — skipping notification")
         return
 
-    # Build file list text (max 10 files per message)
     preview = files[:10]
     file_lines = '\n'.join(
         f"**{f['name']}** ({f['size']}, {f['ftime']})"
@@ -77,13 +97,13 @@ def send_discord(webhook_url: str, files: list[dict], parking_url: str):
     if len(files) > 10:
         file_lines += f"\n_...and {len(files) - 10} more_"
 
-    base_url = parking_url.rstrip('/')
+    base_name = parking_url.rstrip('/').split('/')[-1]
     embed = {
         "embeds": [{
             "title": "🚗 Parking Recording — New File(s)",
-            "color": 0xFF8C00,  # orange
+            "color": 0xFF8C00,
             "description": file_lines,
-            "footer": {"text": f"Source: {base_url.split('/')[-1]}"},
+            "footer": {"text": f"Source: {base_name}"},
             "timestamp": datetime.now().isoformat(),
         }]
     }
@@ -91,7 +111,7 @@ def send_discord(webhook_url: str, files: list[dict], parking_url: str):
     try:
         r = requests.post(webhook_url, json=embed, timeout=10)
         if r.status_code in (200, 204):
-            print(f"  ✓ Discord notification sent for {len(files)} file(s)")
+            print(f"  ✓ Discord notified ({len(files)} file(s))")
         else:
             print(f"  ✗ Discord error {r.status_code}: {r.text}")
     except Exception as e:
@@ -104,15 +124,26 @@ def main():
     ap.add_argument("--interval", type=int, default=DEFAULT_INTERVAL, help="Poll interval (s)")
     ap.add_argument("--webhook",  default=os.environ.get("DISCORD_WEBHOOK_URL", ""),
                     help="Discord webhook URL")
-    ap.add_argument("--once",      action="store_true", help="Poll once and exit")
+    ap.add_argument("--once",     action="store_true", help="Poll once and exit")
+    ap.add_argument("--state",    default=STATE_FILE,   help="State file path")
     args = ap.parse_args()
 
-    print(f"Watching: {args.url}")
-    print(f"Interval: {args.interval}s")
-    print(f"Webhook:  {'set' if args.webhook else 'NOT SET — set DISCORD_WEBHOOK_URL'}")
+    global STATE_FILE
+    STATE_FILE = args.state
+
+    print(f"Watching : {args.url}")
+    print(f"Interval : {args.interval}s")
+    print(f"State    : {STATE_FILE}")
+    print(f"Webhook  : {'set ✓' if args.webhook else 'NOT SET'}")
     print()
 
-    seen = load_seen()
+    state = load_state()
+    seen: set = set(state.get("seen", []))
+    last  = state.get("last")
+
+    if last:
+        print(f"Last report: {last['name']} at {last['ftime']} (saved at {last['reported_at']})")
+        print()
 
     while True:
         ts = datetime.now().strftime("%H:%M:%S")
@@ -120,19 +151,27 @@ def main():
         files = get_file_list(args.url)
 
         if not files:
-            print("  (no files found or fetch error)")
+            print("  (fetch error or folder empty)")
         else:
             new_files = [f for f in files if f['name'] not in seen]
             if new_files:
-                print(f"  {len(new_files)} new file(s) detected:")
+                print(f"  {len(new_files)} new file(s):")
                 for f in new_files:
-                    print(f"    + {f['name']} ({f['size']})")
+                    print(f"    + {f['name']} ({f['size']}, {f['ftime']})")
+
+                # ── Save LAST REPORT before sending Discord ──────────
+                # Save the single most recent new file as "the" last report
+                save_last_report(new_files[0])
+
+                # ── Send Discord notification ───────────────────────
                 send_discord(args.webhook, new_files, args.url)
-                # Add new files to seen
+
+                # ── Update seen list ────────────────────────────────
                 seen.update(f['name'] for f in new_files)
-                save_seen(seen)
+                state["seen"] = list(seen)
+                save_state(state)
             else:
-                print(f"  No new files ({len(files)} total)")
+                print(f"  No new files ({len(files)} total in folder)")
 
         if args.once:
             break
