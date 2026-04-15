@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
 RTSP to HLS streaming server with automatic reconnection.
-ffmpeg watchdog — restarts it when it dies.
+ffmpeg watchdog — restarts it when it dies, WITHOUT wiping segments.
 """
 import subprocess, os, signal, sys, re, time, threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -13,27 +13,25 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 
 os.makedirs(STREAM_DIR, exist_ok=True)
 
-# Clean stream directory
+# Clean stream directory ONCE at startup only
 def clean_stream_dir():
     for item in os.listdir(STREAM_DIR):
         p = os.path.join(STREAM_DIR, item)
         try:
             if os.path.isdir(p):
-                for f in os.listdir(p):
-                    os.unlink(os.path.join(p, f))
+                for f in os.listdir(p): os.unlink(os.path.join(p, f))
                 os.rmdir(p)
             else:
                 os.unlink(p)
         except: pass
 
 clean_stream_dir()
-
 DEVNULL = open(os.devnull, 'wb')
 proc = None
 
 def start_ffmpeg():
     global proc
-    clean_stream_dir()
+    # DO NOT clean — old segments may still be referenced by hls.js
     ffmpeg_cmd = [
         "ffmpeg",
         "-rtsp_transport", "tcp",
@@ -56,7 +54,7 @@ def start_ffmpeg():
 start_ffmpeg()
 
 def watchdog():
-    """Restart ffmpeg if it dies."""
+    """Restart ffmpeg if it dies. Does NOT wipe segment files."""
     while True:
         time.sleep(5)
         if proc is None:
@@ -67,9 +65,7 @@ def watchdog():
             print(f"[{time.strftime('%H:%M:%S')}] ffmpeg died (rc={rc}), restarting...")
             start_ffmpeg()
 
-# Watchdog runs in background
 threading.Thread(target=watchdog, daemon=True).start()
-
 print(f"Stream : {HLS_URL}")
 print(f"Output : {STREAM_DIR}")
 print(f"HTTP   : http://0.0.0.0:{PORT}/")
@@ -87,7 +83,9 @@ class HLSHandler(SimpleHTTPRequestHandler):
         ]
         m3u8_path, ch1 = None, ""
         for p, sub in candidates:
-            if os.path.exists(p): m3u8_path, ch1 = p, sub; break
+            if os.path.exists(p):
+                m3u8_path, ch1 = p, sub
+                break
 
         if self.path.startswith("/stream.m3u8"):
             if m3u8_path and os.path.exists(m3u8_path):
