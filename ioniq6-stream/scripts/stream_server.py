@@ -72,19 +72,23 @@ signal.signal(signal.SIGINT,  lambda s,f: (DEVNULL.close(), sys.exit(0)))
 class HLSHandler(SimpleHTTPRequestHandler):
 
     def _proxy_camera(self, path):
-        """Fetch a path from the camera HTTP server and relay to browser."""
+        """Fetch a path from the camera HTTP server and relay to browser (streaming)."""
         try:
-            conn = HTTPConnection(CAM_HOST, CAM_PORT, timeout=10)
+            conn = HTTPConnection(CAM_HOST, CAM_PORT, timeout=15)
             conn.request("GET", path, headers={"Host": CAM_HOST, "User-Agent": "IONIQ6-Proxy/1.0"})
             resp = conn.getresponse()
-            body = resp.read()
             self.send_response(resp.status)
             for h, v in resp.getheaders():
                 if h.lower() not in ("transfer-encoding", "connection", "keep-alive"):
                     self.send_header(h, v)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(body)
+            # Stream in 64KB chunks instead of buffering whole file
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
             conn.close()
         except Exception as e:
             self.send_error(500, f"Camera unreachable: {e}")
