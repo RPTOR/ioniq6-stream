@@ -1,6 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """RTSP to HLS streaming server."""
-import subprocess, threading, os, signal, sys
+import subprocess, os, signal, sys, re
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 STREAM_DIR = "/data/data/com.termux/files/home/.stream"
 HLS_URL    = "rtsp://192.168.167.40:554/live"
@@ -8,7 +9,6 @@ PORT       = 8080
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 
 os.makedirs(STREAM_DIR, exist_ok=True)
-# Clean old files
 for f in os.listdir(STREAM_DIR):
     try: os.unlink(os.path.join(STREAM_DIR, f))
     except: pass
@@ -39,55 +39,52 @@ print(f"HTTP   : http://0.0.0.0:{PORT}/")
 signal.signal(signal.SIGTERM, lambda s,f: (proc.terminate(), DEVNULL.close(), sys.exit(0)))
 signal.signal(signal.SIGINT,  lambda s,f: (proc.terminate(), DEVNULL.close(), sys.exit(0)))
 
-from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 class HLSHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        # Find the actual m3u8 (may be in root or ch1/ subdirectory)
+        # Locate the actual m3u8 (root or ch1/ subdirectory)
         candidates = [
-            os.path.join(STREAM_DIR, "stream.m3u8"),
-            os.path.join(STREAM_DIR, "ch1", "stream.m3u8"),
+            (os.path.join(STREAM_DIR, "stream.m3u8"), ""),
+            (os.path.join(STREAM_DIR, "ch1", "stream.m3u8"), "ch1/"),
         ]
-        m3u8_path = None
-        ch1_subdir = ""
-        for p in candidates:
+        m3u8_path, ch1_subdir = None, ""
+        for p, sub in candidates:
             if os.path.exists(p):
-                m3u8_path = p
-                if "ch1" in p:
-                    ch1_subdir = "ch1/"
+                m3u8_path, ch1_subdir = p, sub
                 break
 
-        if self.path == "/stream.m3u8" or self.path.startswith("/stream.m3u8"):
+        if self.path == "/stream.m3u8" or self.path.startswith("/stream.m3u8?"):
             if m3u8_path and os.path.exists(m3u8_path):
                 c = open(m3u8_path).read()
-                # If files are in ch1/ subdirectory, prefix each .ts entry with "ch1/"
-                # so browser resolves them correctly as /ch1/stream23.ts
+                # Rewrite streamNN.ts paths to include ch1/ prefix
                 if ch1_subdir:
-                    def fix_ts(m):
-                        return ch1_subdir + m.group(1) + ".ts"
-                    c = re.sub(r'(stream\d+\.ts)', fix_ts, c)
+                    def fix(m): return ch1_subdir + m.group(1) + ".ts"
+                    c = re.sub(r'(stream\d+\.ts)', fix, c)
+                # Strip ENDLIST — prevents HLS.js from stopping playback on reconnect
+                c = c.replace("#EXT-X-ENDLIST\n", "")
+                c = c.replace("#EXT-X-ENDLIST", "")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/vnd.apple.mpegurl")
                 self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache, no-store")
                 self.end_headers()
                 self.wfile.write(c.encode())
             else:
                 self.send_error(503, "Stream not ready")
             return
 
-        # Serve .ts files from ch1/ subdirectory
-        # Browser requests e.g. /ch1/stream23.ts → STREAM_DIR/ch1/stream23.ts
+        # Serve .ts segment files
         if ".ts" in self.path and not self.path.startswith("/."):
-            ts = self.path.lstrip("/")
-            ts_path = os.path.join(STREAM_DIR, ts)
+            ts_path = os.path.join(STREAM_DIR, self.path.lstrip("/"))
             if os.path.exists(ts_path):
                 self.send_response(200)
                 self.send_header("Content-Type", "video/mp2t")
                 self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 self.wfile.write(open(ts_path, 'rb').read())
             else:
-                self.send_error(404, f"File not found: {ts}")
+                self.send_error(404, f"not found: {self.path}")
             return
 
         # Serve index.html
@@ -106,7 +103,7 @@ class HLSHandler(SimpleHTTPRequestHandler):
 
     def log_message(self, *args): pass
 
-import re
+
 server = HTTPServer(("0.0.0.0", PORT), HLSHandler)
 server.allow_reuse_address = True
 print("Serving on http://0.0.0.0:{}/".format(PORT))
