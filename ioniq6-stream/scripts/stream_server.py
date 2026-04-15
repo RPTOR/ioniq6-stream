@@ -22,7 +22,7 @@ ffmpeg_cmd = [
     "-f",              "hls",
     "-hls_time",       "2",
     "-hls_list_size",  "5",
-    "-hls_flags",      "delete_segments",
+    "-hls_flags",      "append_list+delete_segments",
     "-reconnect",      "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "5",
@@ -74,13 +74,16 @@ class HLSHandler(SimpleHTTPRequestHandler):
             return
 
         # Serve .ts segment files
-        if ".ts" in self.path and not self.path.startswith("/."):
-            ts_path = os.path.join(STREAM_DIR, self.path.lstrip("/"))
+        # Use cache-busting query param so browser always fetches fresh content
+        if (".ts" in self.path or "/ch1/" in self.path) and not self.path.startswith("/."):
+            # Strip any cache-bust query param before mapping to file path
+            ts_path = self.path.split("?")[0].lstrip("/")
+            ts_path = os.path.join(STREAM_DIR, ts_path)
             if os.path.exists(ts_path):
                 self.send_response(200)
                 self.send_header("Content-Type", "video/mp2t")
                 self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", "no-cache, max-age=0")
                 self.end_headers()
                 self.wfile.write(open(ts_path, 'rb').read())
             else:

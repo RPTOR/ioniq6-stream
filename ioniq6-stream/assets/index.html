@@ -43,7 +43,7 @@
 
       status.textContent = 'Starting stream...';
 
-      const m3u8Url = `http://${location.host}/stream.m3u8`;
+      const m3u8Url = `http://${location.host}/stream.m3u8?_=${Date.now()}`;
 
       if (Hls.isSupported()) {
         hls = new Hls({
