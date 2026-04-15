@@ -50,28 +50,28 @@ def get_file_list(parking_url: str) -> list[dict]:
     return files
 
 
-def load_state() -> dict:
-    if not os.path.exists(STATE_FILE):
+def load_state(state_file: str = STATE_FILE) -> dict:
+    if not os.path.exists(state_file):
         return {"seen": [], "last": None}
     try:
-        with open(STATE_FILE) as f:
+        with open(state_file) as f:
             return json.load(f)
     except Exception:
         return {"seen": [], "last": None}
 
 
-def save_state(state: dict):
-    with open(STATE_FILE, 'w') as f:
+def save_state(state: dict, state_file: str = STATE_FILE):
+    with open(state_file, 'w') as f:
         json.dump(state, f, indent=2)
 
 
-def save_last_report(file_info: dict):
+def save_last_report(file_info: dict, state_file: str = STATE_FILE):
     """
     Persist the last reported file name + dashcam timestamp
     to local state BEFORE sending Discord.
     This survives even if Discord fails.
     """
-    state = load_state()
+    state = load_state(state_file)
     state["last"] = {
         "name":     file_info['name'],
         "ftime":    file_info['ftime'],
@@ -128,8 +128,7 @@ def main():
     ap.add_argument("--state",    default=STATE_FILE,   help="State file path")
     args = ap.parse_args()
 
-    global STATE_FILE
-    STATE_FILE = args.state
+    state_file = args.state
 
     print(f"Watching : {args.url}")
     print(f"Interval : {args.interval}s")
@@ -137,7 +136,7 @@ def main():
     print(f"Webhook  : {'set ✓' if args.webhook else 'NOT SET'}")
     print()
 
-    state = load_state()
+    state = load_state(state_file)
     seen: set = set(state.get("seen", []))
     last  = state.get("last")
 
@@ -161,7 +160,7 @@ def main():
 
                 # ── Save LAST REPORT before sending Discord ──────────
                 # Save the single most recent new file as "the" last report
-                save_last_report(new_files[0])
+                save_last_report(new_files[0], state_file)
 
                 # ── Send Discord notification ───────────────────────
                 send_discord(args.webhook, new_files, args.url)
@@ -169,7 +168,7 @@ def main():
                 # ── Update seen list ────────────────────────────────
                 seen.update(f['name'] for f in new_files)
                 state["seen"] = list(seen)
-                save_state(state)
+                save_state(state, state_file)
             else:
                 print(f"  No new files ({len(files)} total in folder)")
 
