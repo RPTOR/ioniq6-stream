@@ -10,13 +10,27 @@
     body { background: #0d0d0d; color: #fff; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; }
     h1 { font-size: 1.2rem; margin-bottom: 12px; color: #4fc3f7; }
     #video { border: 1px solid #333; border-radius: 8px; width: 100%; max-width: 960px; background: #000; }
-    #controls { margin-top: 12px; display: flex; gap: 10px; }
+    #controls { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
     button { background: #4fc3f7; color: #000; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
     button:hover { background: #81d4fa; }
     button.snapshot { background: #ff8a65; }
     button.snapshot:hover { background: #ffab91; }
+    button.browse { background: #66bb6a; }
+    button.browse:hover { background: #81c784; }
     #status { margin-top: 10px; font-size: 0.85rem; color: #888; }
     #canvas { display: none; }
+    #browser { margin-top: 20px; width: 100%; max-width: 960px; display: none; }
+    #browser.visible { display: block; }
+    #browser-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    #browser-path { color: #aaa; font-size: 0.85rem; }
+    #file-list { background: #111; border-radius: 8px; padding: 10px; max-height: 300px; overflow-y: auto; }
+    .file-row { display: flex; justify-content: space-between; padding: 6px 8px; border-radius: 4px; cursor: pointer; }
+    .file-row:hover { background: #222; }
+    .file-row.folder { color: #4fc3f7; }
+    .file-row .fname { flex: 1; }
+    .file-row .fsize { color: #888; font-size: 0.8rem; margin-left: 12px; white-space: nowrap; }
+    .file-row .ftime { color: #666; font-size: 0.75rem; margin-left: 12px; white-space: nowrap; }
+    #browser iframe { display: none; width: 100%; height: 400px; border: 1px solid #333; border-radius: 8px; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -25,63 +39,115 @@
   <div id="controls">
     <button onclick="initStream()">▶ Connect</button>
     <button onclick="takeSnapshot()">📸 Snapshot</button>
+    <button class="browse" onclick="toggleBrowser()">📁 File Browser</button>
   </div>
   <div id="status">Click Connect to start streaming</div>
   <canvas id="canvas"></canvas>
 
+  <div id="browser">
+    <div id="browser-header">
+      <button onclick="navigateUp()">⬆ Up</button>
+      <span id="browser-path">/DCIM</span>
+      <button onclick="loadFolder(currentPath)">🔄 Refresh</button>
+    </div>
+    <div id="file-list">Loading...</div>
+  </div>
+
   <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const status = document.getElementById('status');
+    const video   = document.getElementById('video');
+    const canvas  = document.getElementById('canvas');
+    const status  = document.getElementById('status');
+    const CAM_URL = 'http://192.168.167.40';
     let hls = null;
+    let browserOpen = false;
+    let currentPath = '/DCIM';
 
     function initStream() {
-      if (hls) {
-        hls.destroy();
-        hls = null;
-      }
-
+      if (hls) { hls.destroy(); hls = null; }
       status.textContent = 'Starting stream...';
-
       const m3u8Url = `http://${location.host}/stream.m3u8?_=${Date.now()}`;
-
       if (Hls.isSupported()) {
-        hls = new Hls({
-          startLevel: -1,       // auto quality
-          debug: false,
-        });
+        hls = new Hls({ startLevel: -1, debug: false });
         hls.loadSource(m3u8Url);
         hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.play().catch(() => {});
-          status.textContent = 'Live streaming';
-        });
-        hls.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) {
-            status.textContent = 'Stream error: ' + data.type;
-          }
-        });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(()=>{}); status.textContent = 'Live streaming'; });
+        hls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) status.textContent = 'Stream error: ' + d.type; });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Safari / native HLS
-        video.src = m3u8Url;
-        video.play().catch(() => {});
-        status.textContent = 'Live streaming (native HLS)';
-      } else {
-        status.textContent = 'HLS not supported in this browser';
-      }
+        video.src = m3u8Url; video.play().catch(()=>{}); status.textContent = 'Live streaming (native HLS)';
+      } else { status.textContent = 'HLS not supported'; }
     }
 
     function takeSnapshot() {
       if (!video.src) { alert('Not connected!'); return; }
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
       canvas.getContext('2d').drawImage(video, 0, 0);
-      canvas.toBlob(blob => {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'snapshot-' + Date.now() + '.jpg';
-        a.click();
-      });
+      canvas.toBlob(blob => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'snapshot-' + Date.now() + '.jpg'; a.click(); });
+    }
+
+    function toggleBrowser() {
+      browserOpen = !browserOpen;
+      const el = document.getElementById('browser');
+      el.classList.toggle('visible', browserOpen);
+      if (browserOpen && !currentPath) loadFolder('/DCIM');
+    }
+
+    async function loadFolder(path) {
+      const list = document.getElementById('file-list');
+      const pathEl = document.getElementById('browser-path');
+      currentPath = path;
+      pathEl.textContent = path || '/';
+      list.innerHTML = 'Loading...';
+      try {
+        const r = await fetch(CAM_URL + path);
+        const html = await r.text();
+        const rows = parseFileList(html, path);
+        if (rows.length === 0) {
+          list.innerHTML = '<div style="color:#888;padding:10px">Empty or inaccessible</div>';
+          return;
+        }
+        list.innerHTML = rows.map(row =>
+          `<div class="file-row ${row.type}" onclick="${row.type === 'folder' ? `loadFolder('${row.href}')` : `playFile('${row.href}','${row.name}')`}">
+            <span class="fname">${row.name}</span>
+            <span class="fsize">${row.size}</span>
+            <span class="ftime">${row.time}</span>
+           </div>`
+        ).join('');
+      } catch(e) {
+        list.innerHTML = `<div style="color:#f55;padding:10px">Error: ${e.message}<br><small>Make sure you are connected to the dashcam WiFi</small></div>`;
+      }
+    }
+
+    function parseFileList(html, basePath) {
+      const rows = [];
+      // Parse table rows: <tr><td><a href="...">name</a>...size...time
+      const re = /<tr><td><a href="([^"]+)"><b>([^<]+)<\/b><\/a>.*?<td[^>]*>([\d,]+)\s*<\/td>.*?<td[^>]*>([\d\/:\s]+)<\/td>/g;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const href = m[1];
+        const name = m[2];
+        const size = m[3].trim();
+        const time = m[4].trim();
+        const fullHref = href.startsWith('/') ? href : basePath.replace(/[^/]*$/,'') + href;
+        const isFolder = size === 'folder' || name === 'folder' || href.endsWith('/') || !size;
+        rows.push({ type: isFolder ? 'folder' : 'file', name, href: fullHref, size, time });
+      }
+      return rows;
+    }
+
+    function navigateUp() {
+      if (!currentPath || currentPath === '/') return;
+      const parts = currentPath.split('/').filter(Boolean);
+      parts.pop();
+      loadFolder('/' + parts.join('/'));
+    }
+
+    function playFile(href, name) {
+      // Open camera file directly in video tag
+      const url = CAM_URL + href;
+      if (hls) { hls.destroy(); hls = null; }
+      video.src = url;
+      video.play().catch(()=>{});
+      status.textContent = 'Playing: ' + name;
     }
   </script>
 </body>
