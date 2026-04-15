@@ -21,8 +21,8 @@ ffmpeg_cmd = [
     "-c:v",            "copy",
     "-f",              "hls",
     "-hls_time",       "2",
-    "-hls_list_size",  "5",
-    "-hls_flags",      "append_list+delete_segments",
+    "-hls_list_size",  "30",   # keep 60s buffer — survives reconnections
+    "-hls_flags",      "append_list",  # no deletion, keep all segments for replay
     "-reconnect",      "1",
     "-reconnect_streamed", "1",
     "-reconnect_delay_max", "5",
