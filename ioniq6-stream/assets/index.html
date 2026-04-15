@@ -58,7 +58,7 @@
     const canvas  = document.getElementById('canvas');
     const status  = document.getElementById('status');
     const browseBtn = document.getElementById('browseBtn');
-    const CAM_PROXY = '/cam';  // proxied through stream_server.py
+    const CAM_PROXY = '/cam';
     let hls = null;
     let browserOpen = false;
     let currentPath = '/DCIM';
@@ -90,8 +90,7 @@
       const el = document.getElementById('browser');
       el.classList.toggle('visible', browserOpen);
       browseBtn.classList.toggle('active', browserOpen);
-      if (browserOpen && !currentPath) loadFolder('/DCIM');
-      else if (browserOpen) loadFolder(currentPath);
+      if (browserOpen) loadFolder(currentPath);
     }
 
     async function loadFolder(path) {
@@ -122,23 +121,45 @@
 
     function parseFileList(html, basePath) {
       const rows = [];
-      // Camera uses: <tr><td><a href="/DCIM/Photo"><b>Photo</b></a><td align=center><i>folder</i><td align=right>2026/02/25 19:07:22
-      const re = /<tr><td><a href="([^"]+)"><b>([^<]+)<\/b><\/a>.*?<td[^>]*>([\d,]+|folder)<\/td>.*?<td[^>]*>([\d\/:\s]+)<\/td>/g;
-      let m;
-      while ((m = re.exec(html)) !== null) {
-        const href = m[1];
-        const name = m[2];
-        const size = m[3].trim();
-        const time = m[4].trim();
-        const isFolder = size === 'folder' || !size;
-        // Resolve relative hrefs
-        let fullHref;
-        if (href.startsWith('/')) {
-          fullHref = href;
+      // Camera HTML has NO </tr> closing tags — each row is: <tr>...<next <tr> or end of table
+      // Format: <tr><td><a href="PATH"><b>NAME</b></a><td align=...><i>folder</i> or SIZE<td align=right>DATE
+      // We split on <tr> boundaries and parse each row individually
+      const rowTexts = html.split('<tr>');
+      for (const raw of rowTexts) {
+        if (!raw.includes('<a href=')) continue;
+
+        // href and name: <td><a href="PATH"><b>NAME</b></a>
+        const hrefMatch = raw.match(/<a href="([^"]+)"><b>([^<]+)<\/b><\/a>/);
+        if (!hrefMatch) continue;
+        const href = hrefMatch[1];
+        const name = hrefMatch[2];
+
+        // Determine if folder: row contains <i>folder</i>
+        const isFolder = raw.includes('>folder<') || raw.includes('>folder<');
+
+        // Size: after href block, find the next <td...>...<td align=right>DATE
+        // The size is either "folder" text or numeric like "24.56 MB"
+        let size = '';
+        if (isFolder) {
+          size = 'folder';
         } else {
+          // Size appears as text in a <td> (not align=right one, which is the date)
+          // e.g. <td align=right> 24.56 MB
+          const sizeMatch = raw.match(/<td[^>]*>\s*([\d.]+\s*[KMG]?B)\s*<\/td>/i);
+          if (sizeMatch) size = sizeMatch[1].trim();
+        }
+
+        // Date/time: <td align=right>2026/04/15 20:15:45
+        const dateMatch = raw.match(/<td[^>]*align=right[^>]*>([\d\/:\s]+)<\/td>/);
+        const time = dateMatch ? dateMatch[1].trim() : '';
+
+        // Resolve relative paths
+        let fullHref = href;
+        if (!href.startsWith('/')) {
           const base = basePath.replace(/[^/]*$/, '');
           fullHref = base + href;
         }
+
         rows.push({ type: isFolder ? 'folder' : 'file', name, href: fullHref, size, time });
       }
       return rows;
@@ -152,7 +173,6 @@
     }
 
     function playFile(href, name) {
-      // Proxy through server so browser can play camera files
       const url = CAM_PROXY + href;
       if (hls) { hls.destroy(); hls = null; }
       video.src = url;
