@@ -36,24 +36,29 @@
     #canvas { display: none; }
 
     /* File browser */
-    #browser { background: #111; border-radius: 8px; overflow: hidden; }
+    #browser { background: #111; border-radius: 8px; overflow: hidden; flex-shrink: 0; }
     #browser-header { display: flex; align-items: center; gap: 6px; padding: 9px; background: #1a1a1a; flex-wrap: wrap; }
     #browser-path { color: #aaa; font-size: 0.8rem; font-family: monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #file-list { max-height: calc(100vh - 240px); overflow-y: auto; padding: 6px; }
-    .file-row { display: flex; justify-content: space-between; padding: 7px 8px; border-radius: 4px; cursor: pointer; align-items: center; }
+    #file-list { max-height: calc(100vh - 200px); overflow-y: auto; padding: 6px; }
+    .file-row { display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border-radius: 4px; cursor: pointer; }
     .file-row:hover { background: #222; }
     .file-row.folder { color: #4fc3f7; }
-    .file-row .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85rem; }
-    .file-row .fsize { color: #888; font-size: 0.75rem; margin-left: 8px; white-space: nowrap; }
-    .file-row .ftime { color: #666; font-size: 0.7rem; margin-left: 8px; white-space: nowrap; }
+    .file-row .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85rem; }
+    .file-row .meta { display: flex; gap: 8px; font-size: 0.72rem; color: #666; }
+    .file-row .fsize { white-space: nowrap; }
+    .file-row .ftime { white-space: nowrap; }
 
     /* Viewer */
-    #viewer { margin-top: 10px; border: 1px solid #333; border-radius: 8px; overflow: hidden; display: none; background: #000; }
-    #viewer-media { display: flex; align-items: center; justify-content: center; min-height: 200px; }
-    #viewer-media img, #viewer-media video { max-width: 100%; max-height: 60vh; display: block; }
+    #viewer { flex: 1; border: 1px solid #333; border-radius: 8px; overflow: hidden; display: none; background: #000; min-height: 400px; }
+    #viewer-media { display: flex; align-items: center; justify-content: center; height: calc(100vh - 230px); }
+    #viewer-media img, #viewer-media video { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
     #viewer-name { padding: 7px 10px; font-size: 0.78rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: #111; }
     #viewer-controls { padding: 8px; background: #1a1a1a; display: flex; gap: 8px; justify-content: center; }
     .btn-sm { padding: 5px 12px; font-size: 0.8rem; }
+
+    /* Browse layout: 30/70 split */
+    #browse-split { display: flex; gap: 14px; height: calc(100vh - 180px); }
+    #browse-split > * { overflow: hidden; }
   </style>
 </head>
 <body>
@@ -79,22 +84,23 @@
 
       <!-- Browse / Management Panel -->
       <div id="panel-browse" class="panel">
-        <div id="browser">
-          <div id="browser-header">
-            <button class="btn-sm" onclick="navigateUp()">⬆ Up</button>
-            <button class="btn-sm" onclick="loadFolder('/DCIM')">🏠</button>
-            <span id="browser-path">/DCIM</span>
+        <div id="browse-split">
+          <div id="browser" style="width: 30%;">
+            <div id="browser-header">
+              <button class="btn-sm" onclick="navigateUp()">⬆</button>
+              <button class="btn-sm" onclick="loadFolder('/DCIM')">🏠</button>
+              <span id="browser-path">/DCIM</span>
+            </div>
+            <div id="file-list">Click "Browse Files" tab to load</div>
           </div>
-          <div id="file-list">Click "Browse Files" tab to load</div>
-        </div>
 
-        <div id="viewer">
-          <div id="viewer-name"></div>
-          <div id="viewer-media"></div>
-          <div id="viewer-name2" style="padding:7px 10px;font-size:0.78rem;color:#888;background:#111;"></div>
-          <div id="viewer-controls">
-            <button class="btn-sm" onclick="closeViewer()">✕ Close</button>
-            <button class="btn-sm" onclick="downloadFile()">⬇ Download</button>
+          <div id="viewer">
+            <div id="viewer-media"></div>
+            <div id="viewer-name"></div>
+            <div id="viewer-controls">
+              <button class="btn-sm" onclick="closeViewer()">✕ Close</button>
+              <button class="btn-sm" onclick="downloadFile()">⬇ Download</button>
+            </div>
           </div>
         </div>
       </div>
@@ -189,18 +195,17 @@
 
     function openFile(href, name, type) {
       currentFile = { href, name, type };
-      const vm   = document.getElementById('viewer-media');
-      const vn   = document.getElementById('viewer-name');
-      const vn2  = document.getElementById('viewer-name2');
-      const v    = document.getElementById('viewer');
-      v.style.display = 'block';
-      vn.textContent  = name;
-      vn2.textContent = type === 'photo' ? '📷 Photo' : '🎬 Video';
+      const vm = document.getElementById('viewer-media');
+      const vn = document.getElementById('viewer-name');
+      const v  = document.getElementById('viewer');
+      v.style.display = 'flex';
+      v.style.flexDirection = 'column';
+      vn.textContent = (type === 'photo' ? '📷 ' : '🎬 ') + name;
 
       if (type === 'photo' || name.match(/\.(jpg|jpeg|png)$/i)) {
-        vm.innerHTML = `<img src="${CAM_PROXY}${href}" alt="${name}" style="max-height:55vh;display:block;margin:0 auto;">`;
+        vm.innerHTML = `<img src="${CAM_PROXY}${href}" alt="${name}">`;
       } else {
-        vm.innerHTML = `<video src="${CAM_PROXY}${href}" controls playsinline style="max-height:55vh;width:100%;"></video>`;
+        vm.innerHTML = `<video src="${CAM_PROXY}${href}" controls playsinline></video>`;
       }
     }
 
