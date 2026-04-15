@@ -1,7 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
 RTSP to HLS streaming server with automatic reconnection.
-ffmpeg watchdog — restarts it when it dies, WITHOUT wiping segments.
 """
 import subprocess, os, signal, sys, re, time, threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -13,8 +12,13 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 
 os.makedirs(STREAM_DIR, exist_ok=True)
 
-# Clean stream directory ONCE at startup only
+# Clean ONCE at script startup only — NOT on ffmpeg restart
+_cleaned = False
 def clean_stream_dir():
+    global _cleaned
+    if _cleaned:
+        return
+    _cleaned = True
     for item in os.listdir(STREAM_DIR):
         p = os.path.join(STREAM_DIR, item)
         try:
@@ -25,13 +29,13 @@ def clean_stream_dir():
                 os.unlink(p)
         except: pass
 
-clean_stream_dir()
+clean_stream_dir()   # clean only on first startup
 DEVNULL = open(os.devnull, 'wb')
 proc = None
 
 def start_ffmpeg():
     global proc
-    # DO NOT clean — old segments may still be referenced by hls.js
+    # DO NOT clean here — old segments may still be downloading by hls.js
     ffmpeg_cmd = [
         "ffmpeg",
         "-rtsp_transport", "tcp",
@@ -50,11 +54,9 @@ def start_ffmpeg():
     proc = subprocess.Popen(ffmpeg_cmd, stdout=DEVNULL.fileno(), stderr=DEVNULL.fileno())
     print(f"[{time.strftime('%H:%M:%S')}] ffmpeg started (pid={proc.pid})")
 
-# Start ffmpeg
 start_ffmpeg()
 
 def watchdog():
-    """Restart ffmpeg if it dies. Does NOT wipe segment files."""
     while True:
         time.sleep(5)
         if proc is None:
@@ -76,7 +78,6 @@ signal.signal(signal.SIGINT,  lambda s,f: (DEVNULL.close(), sys.exit(0)))
 
 class HLSHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        # Find m3u8 — could be root or ch1/ subdirectory
         candidates = [
             (os.path.join(STREAM_DIR, "stream.m3u8"), ""),
             (os.path.join(STREAM_DIR, "ch1", "stream.m3u8"), "ch1/"),
@@ -93,7 +94,6 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 if ch1:
                     def fix(m): return ch1 + m.group(1) + ".ts"
                     c = re.sub(r'(stream\d+\.ts)', fix, c)
-                # Strip ENDLIST so HLS keeps playing through reconnects
                 c = c.replace("#EXT-X-ENDLIST\n", "").replace("#EXT-X-ENDLIST", "")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/vnd.apple.mpegurl")
