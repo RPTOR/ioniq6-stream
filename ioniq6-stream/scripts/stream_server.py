@@ -3,7 +3,7 @@
 RTSP to HLS streaming server with automatic reconnection.
 Camera file browser proxy — fetches from camera so browser can browse without CORS.
 """
-import subprocess, os, signal, sys, re, time, threading
+import subprocess, os, signal, sys, re, time, threading, socket
 try:
     from http.client import HTTPConnection
 except ImportError:
@@ -11,29 +11,84 @@ except ImportError:
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 STREAM_DIR  = "/data/data/com.termux/files/home/.stream"
-HLS_URL     = "rtsp://192.168.167.40:554/live"
-CAM_HOST    = "192.168.167.40"
 CAM_PORT    = 80
 PORT        = 8080
 ASSETS_DIR  = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+STATE_FILE  = os.path.expanduser("~/.camera_ip")
 
 os.makedirs(STREAM_DIR, exist_ok=True)
 
-_cleaned = False
-def clean_stream_dir():
-    global _cleaned
-    if _cleaned: return
-    _cleaned = True
-    for item in os.listdir(STREAM_DIR):
-        p = os.path.join(STREAM_DIR, item)
-        try:
-            if os.path.isdir(p):
-                for f in os.listdir(p): os.unlink(os.path.join(p, f))
-                os.rmdir(p)
-            else: os.unlink(p)
-        except: pass
+# Do NOT clean stream dir on restart — ffmpeg reuses it and may still have valid segments
+def _is_camera_http(ip, timeout=4):
+    try:
+        conn = HTTPConnection(ip, CAM_PORT, timeout=timeout)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        server = resp.getheader("Server", "").lower()
+        conn.close()
+        for sig in ("hfs", "busybox", "viofo", "http"):
+            if sig in server:
+                return True
+        if ip.startswith("192.168.167."):
+            return True
+    except Exception:
+        pass
+    return False
 
-clean_stream_dir()
+def _scan_subnet(subnet):
+    try:
+        result = subprocess.run(
+            ["nmap", "-sn", "-PS80", "-T4", "--max-retries", "1",
+             "--max-scan-delay", "100ms", "-oG", "-", subnet],
+            capture_output=True, text=True, timeout=60
+        )
+        for line in result.stdout.splitlines():
+            if "Host:" in line and "Status: Up" in line:
+                for p in line.split():
+                    if p[0].isdigit() and p.count(".") == 3:
+                        if _is_camera_http(p):
+                            return p
+    except Exception:
+        pass
+    return None
+
+def _get_subnets():
+    subnets = ["192.168.167.0/24", "192.168.1.0/24"]
+    try:
+        with open("/proc/net/route") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[1] == "00000000":
+                    gw = parts[2]
+                    if len(gw) == 8:
+                        ip = ".".join([str(int(gw[i:i+2], 16)) for i in (6, 4, 2, 0)])
+                        subnets.insert(0, ".".join(ip.split(".")[:3]) + ".0/24")
+    except Exception:
+        pass
+    return list(dict.fromkeys(subnets))
+
+def find_camera_ip():
+    # Try cached IP
+    if os.path.exists(STATE_FILE):
+        cached = open(STATE_FILE).read().strip()
+        if cached and _is_camera_http(cached, timeout=3):
+            return cached
+    # Scan subnets
+    print(f"[find_camera] Scanning for VIOFO camera...")
+    for subnet in _get_subnets():
+        found = _scan_subnet(subnet)
+        if found:
+            open(STATE_FILE, "w").write(found)
+            print(f"[find_camera] Found at {found}")
+            return found
+    print("[find_camera] Camera not found, using fallback 192.168.167.40")
+    return "192.168.167.40"
+
+CAM_HOST = find_camera_ip()
+HLS_URL  = f"rtsp://{CAM_HOST}:554/live"
+print(f"Camera : {CAM_HOST}")
+print(f"Stream : {HLS_URL}")
+
 DEVNULL = open(os.devnull, 'wb')
 proc = None
 
@@ -115,7 +170,7 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 break
 
         if self.path.startswith("/stream.m3u8"):
-            if m3u8_path and os.path.exists(m3u8_path):
+            if m3u8_path:
                 c = open(m3u8_path).read()
                 if ch1:
                     def fix(m): return ch1 + m.group(1) + ".ts"
@@ -131,8 +186,8 @@ class HLSHandler(SimpleHTTPRequestHandler):
                 self.send_error(503, "Stream not ready")
             return
 
-        # ── Segment files ─────────────────────────────────────────────
-        if ".ts" in self.path and not self.path.startswith("/."):
+        # ── Segment files (must be after /stream.m3u8 check) ───────
+        if self.path.startswith("/stream") and ".ts" in self.path and not self.path.startswith("/."):
             ts = self.path.split("?")[0].lstrip("/")
             ts_path = os.path.join(STREAM_DIR, ts)
             if os.path.exists(ts_path):
