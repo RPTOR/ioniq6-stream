@@ -143,7 +143,10 @@
     let currentPath = '/DCIM';
     let currentFile = null;
 
+    let currentHls = null;
+
     function showTab(name) {
+      if (currentHls) { currentHls.destroy(); currentHls = null; }
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       document.getElementById('tab-' + name).classList.add('active');
@@ -152,15 +155,15 @@
     }
 
     function initStream() {
-      if (hls) { hls.destroy(); hls = null; }
+      if (currentHls) { currentHls.destroy(); currentHls = null; }
       status.textContent = 'Starting stream...';
       const m3u8Url = `http://${location.host}/stream.m3u8?_=${Date.now()}`;
       if (Hls.isSupported()) {
-        hls = new Hls({ startLevel: -1, debug: false });
-        hls.loadSource(m3u8Url);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(()=>{}); status.textContent = 'Live streaming'; });
-        hls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) status.textContent = 'Stream error: ' + d.type; });
+        currentHls = new Hls({ startLevel: -1, debug: false });
+        currentHls.loadSource(m3u8Url);
+        currentHls.attachMedia(video);
+        currentHls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(()=>{}); status.textContent = 'Live streaming'; });
+        currentHls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) status.textContent = 'Stream error: ' + d.type; });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = m3u8Url; video.play().catch(()=>{}); status.textContent = 'Live streaming (native HLS)';
       } else { status.textContent = 'HLS not supported'; }
@@ -224,8 +227,31 @@
       loadFolder('/' + parts.join('/'));
     }
 
+    function startTranscode(camPath) {
+      return fetch('/transcode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: camPath })
+      }).then(r => r.json()).then(data => data.m3u8);
+    }
+
+    function playHlsVideo(m3u8Url) {
+      if (currentHls) { currentHls.destroy(); currentHls = null; }
+      const fullUrl = `http://${location.host}${m3u8Url}?_=${Date.now()}`;
+      if (Hls.isSupported()) {
+        currentHls = new Hls({ startLevel: -1, debug: false });
+        currentHls.loadSource(fullUrl);
+        currentHls.attachMedia(video);
+        currentHls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(()=>{}); });
+        currentHls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) console.error('Transcode stream error:', d.type); });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = fullUrl; video.play().catch(()=>{});
+      }
+    }
+
     function openFile(idx) {
       const row = window._fileRows[idx];
+      if (!row) return;
       if (row.type === 'folder') { loadFolder(row.href); return; }
 
       currentFile = row;
@@ -234,18 +260,29 @@
       const v  = document.getElementById('viewer');
       v.classList.remove('empty');
 
-      vn.textContent = (row.type === 'photo' || row.name.match(/\.(jpg|jpeg|png)$/i) ? '📷 ' : '🎬 ') + row.name;
+      const isPhoto = row.name.match(/\.(jpg|jpeg|png)$/i);
+      const isMp4   = row.name.match(/\.mp4$/i);
+      vn.textContent = (isPhoto ? '📷 ' : '🎬 ') + row.name;
 
-      if (row.type === 'photo' || row.name.match(/\.(jpg|jpeg|png)$/i)) {
+      if (isPhoto) {
+        if (currentHls) { currentHls.destroy(); currentHls = null; }
         vm.innerHTML = `<img src="${CAM_PROXY}${row.href}" alt="${row.name}">`;
+      } else if (isMp4) {
+        vm.innerHTML = `<div style="color:#888;font-size:0.8rem">Starting transcode for ${row.name}...</div>`;
+        startTranscode(row.href).then(m3u8Url => {
+          if (!m3u8Url) { vm.innerHTML = '<div style="color:#f55">Failed to start transcode</div>'; return; }
+          // Clear the viewer and play the transcoded stream
+          vm.innerHTML = '';
+          playHlsVideo(m3u8Url);
+        }).catch(e => {
+          vm.innerHTML = `<div style="color:#f55">Transcode error: ${e.message}</div>`;
+        });
       } else {
+        if (currentHls) { currentHls.destroy(); currentHls = null; }
         vm.innerHTML = `<video src="${CAM_PROXY}${row.href}" controls playsinline></video>`;
       }
 
-      // highlight selected row
       document.querySelectorAll('.file-row').forEach((el, i) => el.classList.toggle('selected', i === idx));
-
-      // scroll viewer into view
       v.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
