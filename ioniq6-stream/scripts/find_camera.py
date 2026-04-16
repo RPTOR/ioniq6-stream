@@ -1,107 +1,109 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
-Scan local subnet for VIOFO dashcam HTTP server and return its IP.
-Stores result in ~/.camera_ip for subsequent runs.
+Find VIOFO dashcam IP and store it for other scripts to use.
+Writes to ~/.camera_env — can be sourced as a shell script.
+Run via cron to keep IP fresh: */5 * * * * python3 ~/ioniq6-stream/scripts/find_camera.py
 """
-import subprocess, os, time, socket
+import os, re, sys
 
-STATE_FILE = os.path.expanduser("~/.camera_ip")
-CAMERA_PORT = 80
-CAMERA_HTTP_SERVERS = ["hfs", "Busybox", "VIOFO", "HTTP"]
+STATE_FILE  = os.path.expanduser("~/.camera_ip")
+ENV_FILE    = os.path.expanduser("~/.camera_env")
+CAMERA_LLADDRS = {"50:41:1c:03:96:e2"}  # known VIOFO MAC
+CAMERA_MAC_OUI  = ("50:41:1c",)         # VIOFO OUI
 
-def is_camera_http(ip):
-    """Check if IP runs an HTTP server that looks like the VIOFO camera."""
+def is_viofo_hw(hw):
+    hw = hw.lower()
+    if hw in CAMERA_LLADDRS: return True
+    for p in CAMERA_MAC_OUI:
+        if hw.startswith(p): return True
+    return False
+
+def find_via_arp():
+    """Find camera IP from /proc/net/arp by MAC address."""
+    try:
+        with open("/proc/net/arp") as f:
+            next(f)
+            for line in f:
+                parts = line.split()
+                if len(parts) < 4: continue
+                ip, hw, flags = parts[0], parts[3].lower(), parts[2]
+                if is_viofo_hw(hw):
+                    return ip
+    except Exception as e:
+        print(f"[find_camera] arp error: {e}", file=sys.stderr)
+    return None
+
+def find_via_probe(ip):
+    """Check if an IP is a camera by probing its HTTP server."""
     try:
         import http.client
-        conn = http.client.HTTPConnection(ip, CAMERA_PORT, timeout=4)
+        conn = http.client.HTTPConnection(ip, 80, timeout=3)
         conn.request("GET", "/")
         resp = conn.getresponse()
         server = resp.getheader("Server", "").lower()
-        for sig in CAMERA_HTTP_SERVERS:
-            if sig.lower() in server:
-                return True
-        # Also check if it's on subnet 192.168.167.x (typical VIOFO AP range)
-        if ip.startswith("192.168.167."):
-            return True
         conn.close()
+        if "hfs" in server or "busybox" in server:
+            return True
+        # Also accept if it's in the typical camera subnet
+        if ip.startswith("192.168."):
+            return True
     except Exception:
         pass
     return False
 
-def scan_subnet():
-    """Use nmap to find active hosts on the likely subnets."""
-    # VIOFO cameras typically run AP at 192.168.167.x or 192.168.1.x
-    # Also check the current default route subnet
-    gw = None
-    try:
-        with open("/proc/net/route") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 3 and parts[1] == "00000000":
-                    gw = parts[2]
-                    break
-    except Exception:
-        pass
-
-    # Convert gateway hex to IP
-    if gw and len(gw) == 8:
-        ip = ".".join([str(int(gw[i:i+2], 16)) for i in (6, 4, 2, 0)])
-        subnet_base = ".".join(ip.split(".")[:3])
-        subnets = [f"{subnet_base}.0/24", "192.168.167.0/24"]
-    else:
-        subnets = ["192.168.167.0/24", "192.168.1.0/24", "192.168.2.0/24"]
-
-    subnets = list(dict.fromkeys(subnets))  # dedupe
-
-    print(f"[find_camera] Scanning subnets: {subnets}")
-    for subnet in subnets:
-        try:
-            result = subprocess.run(
-                ["nmap", "-sn", "-PS80", "-T4", "--max-retries", "1",
-                 "--max-scan-delay", "100ms", "-oG", "-", subnet],
-                capture_output=True, text=True, timeout=60
-            )
-            for line in result.stdout.splitlines():
-                if "Host:" in line and "Status: Up" in line:
-                    # Extract IP: 192.168.167.40
-                    parts = line.split()
-                    for p in parts:
-                        if p[0].isdigit() and "." in p and p.count(".") == 3:
-                            ip = p
-                            if is_camera_http(ip):
-                                return ip
-        except subprocess.TimeoutExpired:
-            continue
-        except Exception as e:
-            print(f"[find_camera] nmap error on {subnet}: {e}")
-            continue
-    return None
+def write_env(ip):
+    """Write a shell-sourcable env file."""
+    with open(ENV_FILE, "w") as f:
+        f.write(f"export CAMERA_IP={ip}\n")
+        f.write(f"export CAMERA_RTSP=rtsp://{ip}:554/live\n")
+    os.chmod(ENV_FILE, 0o600)
 
 def main():
-    # Try cached IP first
+    # 1. Try cached IP first (fast)
+    cached = None
     if os.path.exists(STATE_FILE):
         cached = open(STATE_FILE).read().strip()
-        if cached:
-            print(f"[find_camera] Trying cached IP: {cached}")
-            if is_camera_http(cached):
-                print(f"[find_camera] Cached IP {cached} is still valid")
-                return cached
-            else:
-                print(f"[find_camera] Cached IP {cached} not reachable, rescanning")
+        if cached and find_via_probe(cached):
+            print(f"[find_camera] cached OK: {cached}")
+            write_env(cached)
+            print(f"export CAMERA_IP={cached}")
+            return
 
-    print("[find_camera] Scanning for VIOFO camera...")
-    found = scan_subnet()
+    # 2. Try ARP cache (instant, no network traffic)
+    arp_ip = find_via_arp()
+    if arp_ip:
+        open(STATE_FILE, "w").write(arp_ip)
+        write_env(arp_ip)
+        print(f"[find_camera] arp found: {arp_ip}")
+        print(f"export CAMERA_IP={arp_ip}")
+        return
+
+    # 3. Scan common subnets for .40 (the camera always gets .40 on VIOFO APs)
+    subnets = [
+        "192.168.167", "192.168.109", "192.168.1",
+        "192.168.2", "192.168.100", "192.168.200",
+    ]
+    found = None
+    for subnet in subnets:
+        ip = f"{subnet}.40"
+        print(f"[find_camera] probing {ip}...", end=" ", flush=True)
+        if find_via_probe(ip):
+            print("OK")
+            found = ip
+            break
+        print("no")
+
     if found:
-        print(f"[find_camera] Found camera at {found}")
         open(STATE_FILE, "w").write(found)
-        return found
+        write_env(found)
+        print(f"export CAMERA_IP={found}")
     else:
-        print("[find_camera] Camera not found on local subnets")
-        return None
+        # Last resort: use last known
+        last = cached or "192.168.109.40"
+        open(STATE_FILE, "w").write(last)
+        write_env(last)
+        print(f"[find_camera] not found, using {last}")
+        print(f"export CAMERA_IP={last}")
 
 if __name__ == "__main__":
-    ip = main()
-    if ip:
-        print(f"CAMERA_IP={ip}")
-    else:
-        print("CAMERA_IP=not_found")
+    main()
