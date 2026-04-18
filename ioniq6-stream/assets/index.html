@@ -41,11 +41,11 @@
     #status { margin-top: 8px; font-size: 0.8rem; color: #777; text-align: center; }
     #canvas { display: none; }
 
-    /* Browse layout: viewer on top, file list below */
+    /* Browse layout */
     #panel-browse.active { display: flex; flex-direction: column; }
 
     /* Viewer strip */
-    #viewer {
+    #viewer { display: none; }
       border: 1px solid #333; border-radius: 8px; overflow: hidden;
       background: #000; margin-bottom: 12px;
       min-height: 260px;
@@ -110,16 +110,15 @@
       </div>
       <div id="status">Click Connect to start streaming</div>
       <canvas id="canvas"></canvas>
+      <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <span style="color:#888;font-size:0.75rem">Direct links:</span>
+        <a href="http://100.127.189.53:8080/stream.m3u8" style="background:#1155cc;color:#fff; padding:4px 10px;border-radius:4px;font-size:0.75rem;text-decoration:none">🔴 HLS</a>
+        <a href="rtsp://100.127.189.53:5544/live" style="background:#166534;color:#fff; padding:4px 10px;border-radius:4px;font-size:0.75rem;text-decoration:none">📹 RTSP</a>
+      </div>
     </div>
 
     <!-- Browse Files -->
     <div id="panel-browse" class="panel">
-
-      <!-- Media viewer -->
-      <div id="viewer" class="empty">
-        <div id="viewer-media">Select a file to preview</div>
-        <div id="viewer-name"></div>
-      </div>
 
       <!-- File list -->
       <div id="browser">
@@ -141,8 +140,6 @@
     const CAM_PROXY = '/cam';
     let hls = null;
     let currentPath = '/DCIM';
-    let currentFile = null;
-
     let currentHls = null;
 
     function showTab(name) {
@@ -191,16 +188,26 @@
           return;
         }
         list.innerHTML = rows.map((row, i) => `
-          <div class="file-row ${row.type}${currentFile && currentFile.href === row.href ? ' selected' : ''}" onclick="openFile(${i})">
-            <span class="finfo">
-              <div class="fname">${row.type === 'folder' ? '📁 ' : '🎬 '}${row.name}</div>
-              <div class="fmeta"><span class="fsize">${row.size}</span><span class="ftime">${row.time}</span></div>
-            </span>
-            ${row.type !== 'folder' ? `<a class="dl-btn" href="${CAM_PROXY}${row.href}" download="${row.name}" onclick="event.stopPropagation()">⬇</a><button class="del-btn" onclick="event.stopPropagation();deleteFile(${i})">🗑</button>` : ''}
+          <div class="file-row ${row.type}">
+            ${row.type === 'folder'
+              ? `<span class="finfo" style="cursor:pointer" onclick="loadFolder('${row.href}')">
+                   <div class="fname">📁 ${row.name}</div>
+                   <div class="fmeta"><span class="fsize">${row.size}</span><span class="ftime">${row.time}</span></div>
+                 </span>`
+              : row.name.match(/\.(jpg|jpeg|png)$/i)
+                ? `<a class="finfo" href="${CAM_PROXY}${row.href}" download="${row.name}" style="cursor:pointer;text-decoration:none;color:inherit">
+                     <div class="fname">🎬 ${row.name}</div>
+                     <div class="fmeta"><span class="fsize">${row.size}</span><span class="ftime">${row.time}</span></div>
+                   </a>`
+                : `<a class="finfo" href="${CAM_PROXY}${row.href}?download=1" download="${row.name}" style="cursor:pointer;text-decoration:none;color:inherit">
+                     <div class="fname">🎬 ${row.name}</div>
+                     <div class="fmeta"><span class="fsize">${row.size}</span><span class="ftime">${row.time}</span></div>
+                   </a>`}
+            ${row.type !== 'folder' ? `<a class="dl-btn" href="${CAM_PROXY}${row.href}" download="${row.name}" onclick="event.stopPropagation()">⬇</a>` : ''}
           </div>`
         ).join('');
         // store rows for indexed access
-        window._fileRows = rows;
+
       } catch(e) {
         list.innerHTML = `<div style="color:#f55;padding:14px;font-size:0.85rem">Error: ${e.message}<br><small>Check dashcam WiFi connection</small></div>`;
       }
@@ -227,91 +234,7 @@
       loadFolder('/' + parts.join('/'));
     }
 
-    function startTranscode(camPath) {
-      return fetch('/transcode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: camPath })
-      }).then(r => r.json()).then(data => data.m3u8);
-    }
 
-    function playHlsVideo(m3u8Url) {
-      if (currentHls) { currentHls.destroy(); currentHls = null; }
-      const fullUrl = `http://${location.host}${m3u8Url}?_=${Date.now()}`;
-      if (Hls.isSupported()) {
-        currentHls = new Hls({ startLevel: -1, debug: false });
-        currentHls.loadSource(fullUrl);
-        currentHls.attachMedia(video);
-        currentHls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(()=>{}); });
-        currentHls.on(Hls.Events.ERROR, (e, d) => { if (d.fatal) console.error('Transcode stream error:', d.type); });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        video.src = fullUrl; video.play().catch(()=>{});
-      }
-    }
-
-    function openFile(idx) {
-      const row = window._fileRows[idx];
-      if (!row) return;
-      if (row.type === 'folder') { loadFolder(row.href); return; }
-
-      currentFile = row;
-      const vm = document.getElementById('viewer-media');
-      const vn = document.getElementById('viewer-name');
-      const v  = document.getElementById('viewer');
-      v.classList.remove('empty');
-
-      const isPhoto = row.name.match(/\.(jpg|jpeg|png)$/i);
-      const isMp4   = row.name.match(/\.mp4$/i);
-      vn.textContent = (isPhoto ? '📷 ' : '🎬 ') + row.name;
-
-      if (isPhoto) {
-        if (currentHls) { currentHls.destroy(); currentHls = null; }
-        vm.innerHTML = `<img src="${CAM_PROXY}${row.href}" alt="${row.name}">`;
-      } else if (isMp4) {
-        vm.innerHTML = `<div style="color:#888;font-size:0.8rem">Starting transcode for ${row.name}...</div>`;
-        startTranscode(row.href).then(m3u8Url => {
-          if (!m3u8Url) { vm.innerHTML = '<div style="color:#f55">Failed to start transcode</div>'; return; }
-          // Clear the viewer and play the transcoded stream
-          vm.innerHTML = '';
-          playHlsVideo(m3u8Url);
-        }).catch(e => {
-          vm.innerHTML = `<div style="color:#f55">Transcode error: ${e.message}</div>`;
-        });
-      } else {
-        if (currentHls) { currentHls.destroy(); currentHls = null; }
-        vm.innerHTML = `<video src="${CAM_PROXY}${row.href}" controls playsinline></video>`;
-      }
-
-      document.querySelectorAll('.file-row').forEach((el, i) => el.classList.toggle('selected', i === idx));
-      v.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    function deleteFile(idx) {
-      const row = window._fileRows[idx];
-      if (!row || row.type === 'folder') return;
-      if (!confirm('Delete ' + row.name + ' from the camera?')) return;
-      fetch(CAM_PROXY + row.href, { method: 'DELETE' })
-        .then(r => { if (r.ok) { loadFolder(currentPath); if (currentFile && currentFile.href === row.href) closeViewer(); } else { alert('Delete failed: ' + r.status); }})
-        .catch(e => alert('Delete error: ' + e.message));
-    }
-
-    function closeViewer() {
-      const v = document.getElementById('viewer');
-      v.classList.add('empty');
-      document.getElementById('viewer-media').innerHTML = 'Select a file to preview';
-      document.getElementById('viewer-name').innerHTML = '';
-      currentFile = null;
-      document.querySelectorAll('.file-row').forEach(el => el.classList.remove('selected'));
-    }
-
-    function downloadCurrentFile() {
-      if (!currentFile) return;
-      const a = document.createElement('a');
-      a.href = CAM_PROXY + currentFile.href;
-      a.download = currentFile.name;
-      a.target = '_blank';
-      a.click();
-    }
   </script>
 </body>
 </html>

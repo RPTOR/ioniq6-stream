@@ -1,19 +1,65 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
 Parking folder watcher for VIOFO A139 PRO dashcam.
-Monitors multiple HTTP folders (Parking, RO, etc.) for new files
+Monitors multiple HTTP folders (Parking, RO, Photo) for new files
 and sends Discord notifications. Saves last report locally before notifying.
+Photo files are sent as Discord message attachments (images).
 
 Usage:
     python3 parking_watcher.py --interval 60 --webhook DISCORD_WEBHOOK_URL
 """
-import os, sys, time, re, json, argparse
+import os, sys, time, re, json, argparse, subprocess
 try: import requests
 except ImportError: requests = None
 from datetime import datetime
+import shutil
+
+def _curl_get(url, timeout=5):
+    """Download a URL via curl (bypasses broken Python DNS on Termux/Android)."""
+    curl = shutil.which("curl") or "curl"
+    r = subprocess.run([curl, "-s", "--max-time", str(timeout), url, "-o", "-"],
+                       capture_output=True, timeout=timeout+2)
+    return r.stdout if r.returncode == 0 else None
+
+def _curl_post_json(url, payload, timeout=15):
+    """POST JSON via curl (bypasses broken Python DNS on Termux/Android)."""
+    import tempfile
+    data = json.dumps(payload).encode()
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.json', delete=False) as f:
+        f.write(data); tmp = f.name
+    try:
+        curl = shutil.which("curl") or "curl"
+        r = subprocess.run([curl, "-s", "-X", "POST", url,
+                          "-H", "Content-Type: application/json",
+                          "--max-time", str(timeout),
+                          "--data-binary", "@" + tmp],
+                          capture_output=True, text=True, timeout=timeout+5)
+        return 200 if r.returncode == 0 else r.returncode, r.stdout
+    finally:
+        os.unlink(tmp)
+
+def _curl_post_multipart(url, payload_json, fname, img_data, ctype, timeout=20):
+    """POST multipart/form-data with a file via curl."""
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.json', delete=False) as f:
+        f.write(json.dumps(payload_json).encode()); pfile = f.name
+    with tempfile.NamedTemporaryFile(mode='wb', suffix='.jpg', delete=False) as f:
+        f.write(img_data); ifile = f.name
+    try:
+        curl = shutil.which("curl") or "curl"
+        r = subprocess.run([curl, "-s", "-X", "POST", url,
+                          "-F", f"payload_json=@{pfile}",
+                          "-F", f"file=@{ifile};type={ctype}",
+                          "--max-time", str(timeout)],
+                          capture_output=True, text=True, timeout=timeout+5)
+        return 200 if r.returncode == 0 else r.returncode, r.stdout
+    finally:
+        os.unlink(pfile); os.unlink(ifile)
 
 DEFAULT_INTERVAL = 60
-STATE_FILE = "/data/data/com.termux/files/home/.parking_state.json"
+STATE_FILE  = "/data/data/com.termux/files/home/.parking_state.json"
+CAM_PROXY  = "http://localhost:8080/cam"
+DISCORD_MAX_PHOTOS = 3   # max JPG photos to attach per notification
 
 
 def get_file_list(parking_url):
@@ -74,31 +120,118 @@ def save_last_report(folder, file_info, state_file):
 
 
 def send_discord(webhook_url, folder, new_files):
-    if not webhook_url or not requests:
+    if not webhook_url:
         print(f"  No webhook — skipping [{folder}]")
         return
 
-    preview = new_files[:10]
-    lines = "\n".join(f"**{f['name']}** ({f['size']}, {f['ftime']})" for f in preview)
-    if len(new_files) > 10:
-        lines += f"\n_...and {len(new_files) - 10} more_"
+    # Separate JPG photos from other files
+    mp4_files  = [f for f in new_files if f["name"].lower().endswith(".mp4")]
+    jpg_files  = [f for f in new_files if f["name"].lower().endswith(".jpg")]
+    other_files = [f for f in new_files if not f["name"].lower().endswith((".mp4", ".jpg"))]
 
-    embed = {
-        "embeds": [{
-            "title":       f"🚗 [{folder}] — {len(new_files)} New File(s)",
-            "color":       0xFF8C00,
-            "description": lines,
-            "footer":      {"text": folder},
-            "timestamp":   datetime.now().isoformat(),
-        }]
-    }
+    # ── Send text embed for non-JPG files ──
+    if other_files:
+        preview = other_files[:10]
+        lines = "\n".join(f"**{f['name']}** ({f['size']}, {f['ftime']})" for f in preview)
+        if len(other_files) > 10:
+            lines += f"\n_...and {len(other_files) - 10} more_"
+        embed = {
+            "embeds": [{
+                "title":     f"🚗 [{folder}] — {len(other_files)} New File(s)",
+                "color":     0xFF8C00,
+                "description": lines,
+                "footer":    {"text": folder},
+                "timestamp": datetime.now().isoformat(),
+            }]
+        }
+        try:
+            code, _ = _curl_post_json(webhook_url, embed, timeout=10)
+            status = "✓" if code == 200 else f"✗ {code}"
+            print(f"  Discord [{folder}]: {status}")
+        except Exception as e:
+            print(f"  Discord [{folder}] ✗: {e}")
 
-    try:
-        r = requests.post(webhook_url, json=embed, timeout=10)
-        status = "✓" if r.status_code in (200, 204) else f"✗ {r.status_code}"
-        print(f"  Discord [{folder}]: {status}")
-    except Exception as e:
-        print(f"  Discord [{folder}] ✗: {e}")
+    # ── Send MP4 files with extracted screenshot ──
+    if mp4_files:
+        for mp4 in mp4_files:
+            try:
+                file_url = CAM_PROXY + mp4["href"]
+                temp_thumb = f"/tmp/{mp4['name']}.jpg"
+                cmd = [
+                    "ffmpeg", "-y", "-ss", "00:00:01", "-i", file_url,
+                    "-vframes", "1", "-q:v", "2", temp_thumb
+                ]
+                subprocess.run(cmd, capture_output=True, check=True)
+                with open(temp_thumb, "rb") as f:
+                    img_data = f.read()
+                payload = {
+                    "embeds": [{
+                        "title":       f"🚗 [{folder}] — New Video",
+                        "description": f"**{mp4['name']}**\n{mp4['ftime']} · {mp4['size']}",
+                        "color":       0x32CD32,
+                        "footer":      {"text": folder},
+                        "timestamp":   datetime.now().isoformat(),
+                    }]
+                }
+                code, _ = _curl_post_multipart(webhook_url, payload, f"{mp4['name']}.jpg", img_data, "image/jpeg", timeout=20)
+                status = "✓" if code == 200 else f"✗ {code}"
+                print(f"  Discord MP4 [{folder}] {mp4['name']}: {status}")
+                os.unlink(temp_thumb)
+            except Exception as e:
+                print(f"  Discord MP4 [{folder}] {mp4['name']} ✗: {e}")
+
+    # ── Send JPG photos as Discord attachments ──
+    if jpg_files:
+        photos_to_send = jpg_files[:DISCORD_MAX_PHOTOS]
+        remaining = len(jpg_files) - DISCORD_MAX_PHOTOS
+
+        for photo in photos_to_send:
+            file_url = CAM_PROXY + photo["href"]
+            img_data = _curl_get(file_url, timeout=5)  # use curl for local proxy too
+            fname = photo["name"]
+            try:
+                if img_data:
+                    payload = {
+                        "embeds": [{
+                            "title":       f"📷 [{folder}] — New Photo",
+                            "description": f"**{fname}**\n{photo['ftime']} · {photo['size']}",
+                            "color":       0x4FC3F7,
+                            "footer":      {"text": folder},
+                            "timestamp":   datetime.now().isoformat(),
+                        }]
+                    }
+                    code, _ = _curl_post_multipart(webhook_url, payload, fname, img_data, "image/jpeg", timeout=20)
+                else:
+                    # Server down — send embed without attachment
+                    payload = {"embeds": [{
+                        "title":       f"📷 [{folder}] — New Photo",
+                        "description": f"**{fname}**\n{photo['ftime']} · {photo['size']}\n_(thumbnail unavailable)_",
+                        "color":       0x4FC3F7,
+                        "footer":      {"text": folder},
+                        "timestamp":   datetime.now().isoformat(),
+                    }]}
+                    code, _ = _curl_post_json(webhook_url, payload, timeout=10)
+                status = "✓" if code == 200 else f"✗ {code}"
+                print(f"  Discord photo [{folder}] {fname}: {status}")
+            except Exception as e:
+                print(f"  Discord photo [{folder}] {photo['name']} ✗: {e}")
+
+        if remaining > 0:
+            embed = {
+                "embeds": [{
+                    "title":     f"📷 [{folder}] — {remaining} more photo(s)",
+                    "color":     0xFF8C00,
+                    "description": "\n".join(f"**{f['name']}** ({f['ftime']})" for f in jpg_files[DISCORD_MAX_PHOTOS:]),
+                    "footer":    {"text": folder},
+                    "timestamp": datetime.now().isoformat(),
+                }]
+            }
+            try:
+                code, _ = _curl_post_json(webhook_url, embed, timeout=10)
+                status = "✓" if code == 200 else f"✗ {code}"
+                print(f"  Discord [{folder}] remaining: {status}")
+            except Exception as e:
+                print(f"  Discord [{folder}] remaining ✗: {e}")
 
 
 def main():
@@ -115,6 +248,7 @@ def main():
     default_urls = [
         f"http://{cam_ip}/DCIM/Movie/Parking",
         f"http://{cam_ip}/DCIM/Movie/RO",
+        f"http://{cam_ip}/DCIM/Photo",
     ]
 
     ap = argparse.ArgumentParser(description="VIOFO multi-folder watcher")

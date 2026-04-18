@@ -1,0 +1,206 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-18T04:08:30.667Z",
+  "entries": {
+    "memory:memory/2026-04-16.md:44:73": {
+      "key": "memory:memory/2026-04-16.md:44:73",
+      "path": "memory/2026-04-16.md",
+      "startLine": 44,
+      "endLine": 73,
+      "source": "memory",
+      "snippet": "- `ioniq6-stream/assets/index.html` — web UI with top-tabbed layout (Live Stream | Browse Files), delete + download per file row ### Camera Info - VIOFO A139 PRO dashcam, consistently gets `.40` on its AP subnets - Current camera IP: `192.168.109.40` (VIOFO AP subnet) - RTSP: `rtsp://192.168.109.40:554/live` (secondary stream, 360p) - HTTP file browsing via `/cam/` proxy on stream server - Camera HTTP server: `Server: hfs/1.00.000`, MAC: `50:41:1c:03:96:e2` - Folders: `/DCIM/Movie/Parking`, `/DCIM/Movie/RO`, `/DCIM/Photo` ### Cron Jobs - `*/5 * * * *` — `find_camera.py` → keeps `~/.camera_env` fresh - `*/1 * * * *` — `parking_watcher.py --webhook \"...\" --once` → monitors 3 folders ### Dis",
+      "recallCount": 3,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 1.5850826622792744,
+      "maxScore": 0.5618229271718527,
+      "firstRecalledAt": "2026-04-17T03:48:32.044Z",
+      "lastRecalledAt": "2026-04-18T04:08:30.667Z",
+      "queryHashes": [
+        "5a8104f4d517",
+        "af7fc01e148c",
+        "b1ae39549853"
+      ],
+      "recallDays": [
+        "2026-04-17",
+        "2026-04-18"
+      ],
+      "conceptTags": [
+        "ioniq6-stream/assets/index.html",
+        "top-tabbed",
+        "192.168.109.40",
+        "554/live",
+        "hfs/1.00.000",
+        "dcim/movie/parking",
+        "dcim/movie/ro",
+        "dcim/photo"
+      ]
+    },
+    "memory:memory/2026-04-16.md:1:30": {
+      "key": "memory:memory/2026-04-16.md:1:30",
+      "path": "memory/2026-04-16.md",
+      "startLine": 1,
+      "endLine": 30,
+      "source": "memory",
+      "snippet": "# Memory — 2026-04-16 ## IONIQ6 Dashcam Project ### Scripts & Files - `ioniq6-stream/scripts/stream_server.py` — RTSP→HLS server on port 8080, also serves `/cam/*` camera proxy and `/stream.m3u8` - `ioniq6-stream/scripts/find_camera.py` — finds VIOFO dashcam IP via ARP cache or probing common subnets for .40; writes `~/.camera_ip` and `~/.camera_env` - `ioniq6-stream/scripts/parking_watcher.py` — monitors Parking/RO/Photo folders for new files, sends Discord notifications; reads CAMERA_IP from `~/.camera_env` - `ioniq6-stream/assets/index.html` — web UI with top-tabbed layout (Live Stream | Browse Files), delete + download per file row ### Camera Info - VIOFO A139 PRO dashcam, consistentl",
+      "recallCount": 3,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 1.5718534931540487,
+      "maxScore": 0.5564323678612708,
+      "firstRecalledAt": "2026-04-17T03:48:32.044Z",
+      "lastRecalledAt": "2026-04-18T04:08:30.667Z",
+      "queryHashes": [
+        "5a8104f4d517",
+        "af7fc01e148c",
+        "b1ae39549853"
+      ],
+      "recallDays": [
+        "2026-04-17",
+        "2026-04-18"
+      ],
+      "conceptTags": [
+        "stream.m3u8",
+        "camera-ip",
+        "camera-env",
+        "parking/ro/photo",
+        "ioniq6-stream/assets/index.html",
+        "top-tabbed",
+        "ioniq6",
+        "dashcam"
+      ]
+    },
+    "memory:memory/2026-04-16.md:24:49": {
+      "key": "memory:memory/2026-04-16.md:24:49",
+      "path": "memory/2026-04-16.md",
+      "startLine": 24,
+      "endLine": 49,
+      "source": "memory",
+      "snippet": "- Webhook active for new file notifications - Recent finding: 8 new RO clips in `/DCIM/Movie/RO` ### Key Fixes - Route-through bug: `\".ts\" in \"/stream.m3u8\"` → fixed with `startswith(\"/stream\")` guard - Directory cleanup removed — caused all segments to be wiped on restart - `parking_watcher.py` updated to use `urllib` stdlib instead of `requests` - Delete feature added: `DELETE /cam/<path>` proxy to camera HTTP server - Photo folder added to parking watcher monitoring ### Current Issues - External access to `100.127.189.53:8080` has asymmetric routing — `/` works from outside but `/cam/` and `/stream.m3u8` 404. Server is fine; phone network routing issue (WiFi vs cellular interface) # Mem",
+      "recallCount": 3,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 1.5396297738878024,
+      "maxScore": 0.553196983131577,
+      "firstRecalledAt": "2026-04-17T03:48:32.044Z",
+      "lastRecalledAt": "2026-04-18T04:08:30.667Z",
+      "queryHashes": [
+        "5a8104f4d517",
+        "af7fc01e148c",
+        "b1ae39549853"
+      ],
+      "recallDays": [
+        "2026-04-17",
+        "2026-04-18"
+      ],
+      "conceptTags": [
+        "network",
+        "dcim/movie/ro",
+        "route-through",
+        "stream.m3u8",
+        "parking-watcher.py",
+        "100.127.189.53",
+        "webhook",
+        "active"
+      ]
+    },
+    "memory:memory/2026-04-16.md:70:87": {
+      "key": "memory:memory/2026-04-16.md:70:87",
+      "path": "memory/2026-04-16.md",
+      "startLine": 70,
+      "endLine": 87,
+      "source": "memory",
+      "snippet": "- Click MP4 in Browse Files → `POST /transcode {path}` → ffmpeg pulls camera MP4 over HTTP, transcodes to 480p HLS - Output: `/data/data/com.termux/files/home/.transcode/<session_id>/trans.m3u8` - Served via `/transcode/<session_id>/trans.m3u8` - Sessions auto-expire after 10 min idle; ffmpeg reads with `-re` (realtime), first segment in ~5s - Transcode params: `scale=640:-2`, `libx264 ultrafast`, `crf 28`, `an`, `hls_time 3`, `hls_list_size 30` - Bug: `delete_out_of_range` is NOT a valid ffmpeg hls_flag — removed it (was causing ffmpeg to fail silently) - Bug: Python 3.13 SIGCHLD handler prevents zombie reaping → `signal.signal(signal.SIGCHLD, signal.SIG_DFL)` at top of server - Bug: camera",
+      "recallCount": 3,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 1.4438892722129821,
+      "maxScore": 0.49345709681510924,
+      "firstRecalledAt": "2026-04-17T03:48:32.044Z",
+      "lastRecalledAt": "2026-04-18T04:08:30.667Z",
+      "queryHashes": [
+        "5a8104f4d517",
+        "af7fc01e148c",
+        "b1ae39549853"
+      ],
+      "recallDays": [
+        "2026-04-17",
+        "2026-04-18"
+      ],
+      "conceptTags": [
+        "data/data/com.termux/files/home",
+        "session-id",
+        "trans.m3u8",
+        "auto-expire",
+        "hls-time",
+        "hls-list-size",
+        "delete-out-of-range",
+        "hls-flag"
+      ]
+    },
+    "memory:memory/2026-04-18.md:22:35": {
+      "key": "memory:memory/2026-04-18.md:22:35",
+      "path": "memory/2026-04-18.md",
+      "startLine": 22,
+      "endLine": 35,
+      "source": "memory",
+      "snippet": "- `_read_camera_ip()` — reads `~/.camera_ip` with live reachability check; falls back to nmap scan - `start_rtsp_ffmpeg()` — uses `_read_camera_ip()` at launch time (handles IP changes between restarts) - `keep_ffmpeg()` watchdog — polls `_ffmpeg_proc.poll()` + segment staleness (>20s no new segments) as dual detection - `_cleanup_stream_segments()` — keeps only newest 35 stream*.ts files; called every 10s - Transcode sessions auto-expire after 10 min idle; watched per-session via segment freshness (>30s) - `find_camera.py`: ARP cache → nmap → direct `.40` probe; writes `~/.camera_ip` - `parking_watcher.py --once`: scans `DCIM/Movie/Parking`, `DCIM/Movie/RO`, `DCIM/Photo`; sends Di",
+      "recallCount": 2,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 0.9962332487106322,
+      "maxScore": 0.5039170950651168,
+      "firstRecalledAt": "2026-04-18T04:03:29.041Z",
+      "lastRecalledAt": "2026-04-18T04:08:30.667Z",
+      "queryHashes": [
+        "af7fc01e148c",
+        "b1ae39549853"
+      ],
+      "recallDays": [
+        "2026-04-18"
+      ],
+      "conceptTags": [
+        "read-camera-ip",
+        "camera-ip",
+        "start-rtsp-ffmpeg",
+        "keep-ffmpeg",
+        "ffmpeg-proc.poll",
+        "cleanup-stream-segments",
+        "auto-expire",
+        "per-session"
+      ]
+    },
+    "memory:memory/2026-04-18.md:1:25": {
+      "key": "memory:memory/2026-04-18.md:1:25",
+      "path": "memory/2026-04-18.md",
+      "startLine": 1,
+      "endLine": 25,
+      "source": "memory",
+      "snippet": "# 2026-04-18 — Session Notes ## Phone/Stream Server Status - Phone (`100.127.189.53:8022`) was SSH-timing-out around 02:07 UTC — may be asleep - Stream server is running via runit (`runsv stream_server`); PID visible in `ps aux` - Live stream URL: `http://100.127.189.53:8080/` → serves `.stream/stream.m3u8` - Web UI: `http://100.127.189.53:8080/` → `assets/index.html` (Live Stream + Browse Files tabs) ## Camera IP Tracking (dynamic) - `~/.camera_ip` holds current camera IP; updated by `find_camera.py` cron every 5 min - Camera consistently at `.40` on its AP subnets (192.168.109/167/177.x) - **stream_server.py now re-resolves camera IP on every ffmpeg restart** via `_read_camera_ip()` - `s",
+      "recallCount": 2,
+      "dailyCount": 0,
+      "groundedCount": 0,
+      "totalScore": 0.9905667722225189,
+      "maxScore": 0.49939366877079006,
+      "firstRecalledAt": "2026-04-18T04:03:29.041Z",
+      "lastRecalledAt": "2026-04-18T04:08:30.667Z",
+      "queryHashes": [
+        "af7fc01e148c",
+        "b1ae39549853"
+      ],
+      "recallDays": [
+        "2026-04-18"
+      ],
+      "conceptTags": [
+        "phone/stream",
+        "100.127.189.53",
+        "ssh-timing-out",
+        "stream-server",
+        "stream/stream.m3u8",
+        "assets/index.html",
+        "camera-ip",
+        "find-camera.py"
+      ]
+    }
+  }
+}
